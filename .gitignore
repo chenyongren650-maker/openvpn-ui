@@ -8,3 +8,5 @@ easy-rsa/pki/index.txt
 build/qrencode
 openvpn-ui.tar.gz
 qrencode
+deploy/dev/.env
+deploy/dev/.runtime*

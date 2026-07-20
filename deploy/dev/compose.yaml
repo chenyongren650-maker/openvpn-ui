@@ -1,0 +1,47 @@
+name: zhisuan-vpn-dev
+
+services:
+  openvpn:
+    image: ${OPENVPN_SERVER_IMAGE:-d3vilh/openvpn-server:0.5.5-amd64}
+    platform: linux/amd64
+    privileged: true
+    cap_add:
+      - NET_ADMIN
+    ports:
+      - "${OPENVPN_BIND_ADDRESS:-192.168.5.240}:${OPENVPN_UDP_PORT:-1196}:1194/udp"
+    environment:
+      TRUST_SUB: ${TRUST_SUB:-10.250.70.0/24}
+      GUEST_SUB: ${GUEST_SUB:-10.250.71.0/24}
+      HOME_SUB: ${HOME_SUB:-192.168.5.0/24}
+    volumes:
+      - ./.runtime/pki:/etc/openvpn/pki
+      - ./.runtime/clients:/etc/openvpn/clients
+      - ./.runtime/config:/etc/openvpn/config
+      - ./.runtime/staticclients:/etc/openvpn/staticclients
+      - ./.runtime/log:/var/log/openvpn
+      - ./.runtime/fw-rules.sh:/opt/app/fw-rules.sh:ro
+      - ./.runtime/checkpsw.sh:/opt/app/checkpsw.sh:ro
+      - ./.runtime/server.conf:/etc/openvpn/server.conf
+    restart: unless-stopped
+
+  openvpn-ui:
+    image: ${OPENVPN_UI_IMAGE:-zhisuan/openvpn-ui:baseline}
+    platform: linux/amd64
+    depends_on:
+      - openvpn
+    environment:
+      OPENVPN_ADMIN_USERNAME: ${OPENVPN_ADMIN_USERNAME:?set OPENVPN_ADMIN_USERNAME in deploy/dev/.env}
+      OPENVPN_ADMIN_PASSWORD: ${OPENVPN_ADMIN_PASSWORD:?set OPENVPN_ADMIN_PASSWORD in deploy/dev/.env}
+    ports:
+      - "${OPENVPN_UI_BIND_ADDRESS:-192.168.5.240}:${OPENVPN_UI_PORT:-8081}:8080/tcp"
+    volumes:
+      - ./.runtime:/etc/openvpn
+      - ./.runtime/db:/opt/openvpn-ui/db
+      - ./.runtime/pki:/usr/share/easy-rsa/pki
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8080/login"]
+      interval: 10s
+      timeout: 3s
+      retries: 12
+      start_period: 10s
+    restart: unless-stopped
