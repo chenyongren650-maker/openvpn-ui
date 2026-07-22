@@ -1,6 +1,7 @@
 package models
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -11,23 +12,34 @@ import (
 	clientconfig "github.com/d3vilh/openvpn-server-config/client/client-config"
 	easyrsaconfig "github.com/d3vilh/openvpn-server-config/easyrsa/config"
 	"github.com/d3vilh/openvpn-server-config/server/config"
+	"github.com/d3vilh/openvpn-ui/migrations"
 	"gopkg.in/hlandau/passlib.v1"
 )
 
-func InitDB() {
-	err := orm.RegisterDriver("sqlite3", orm.DRSqlite)
-	if err != nil {
-		panic(err)
-	}
+func InitDB() error {
 	dbPath, err := web.AppConfig.String("dbPath")
 	if err != nil {
-		panic(err)
+		return fmt.Errorf("read database path: %w", err)
 	}
-	dbSource := "file:" + dbPath
 
-	err = orm.RegisterDataBase("default", "sqlite3", dbSource)
+	migrationResult, err := migrations.Up(context.Background(), dbPath)
 	if err != nil {
-		panic(err)
+		return fmt.Errorf("migrate database: %w", err)
+	}
+	if migrationResult.BackupPath != "" {
+		logs.Info("SQLite pre-migration backup created: %s", migrationResult.BackupPath)
+	}
+	if len(migrationResult.AppliedVersions) > 0 {
+		logs.Info("SQLite migrations applied: %v", migrationResult.AppliedVersions)
+	}
+
+	if err := orm.RegisterDriver("sqlite3", orm.DRSqlite); err != nil {
+		return fmt.Errorf("register SQLite driver: %w", err)
+	}
+	dbSource := "file:" + dbPath + "?_busy_timeout=5000&_foreign_keys=on"
+
+	if err := orm.RegisterDataBase("default", "sqlite3", dbSource); err != nil {
+		return fmt.Errorf("register SQLite database: %w", err)
 	}
 	orm.Debug = true
 	orm.RegisterModel(
@@ -38,11 +50,10 @@ func InitDB() {
 		new(EasyRSAConfig),
 	)
 
-	err = orm.RunSyncdb("default", false, true)
-	if err != nil {
-		logs.Error(err)
-		return
+	if err := orm.RunSyncdb("default", false, true); err != nil {
+		return fmt.Errorf("synchronize existing database models: %w", err)
 	}
+	return nil
 }
 
 func CreateDefaultUsers() {

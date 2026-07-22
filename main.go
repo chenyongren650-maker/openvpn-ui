@@ -28,7 +28,9 @@ func main() {
 		panic(fmt.Errorf("load language resources: %w", err))
 	}
 
-	models.InitDB()
+	if err := models.InitDB(); err != nil {
+		panic(fmt.Errorf("initialize database: %w", err))
+	}
 	models.CreateDefaultUsers()
 	defaultSettings, err := models.CreateDefaultSettings()
 	if err != nil {

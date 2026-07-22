@@ -1,4 +1,5 @@
 data.db
+db/backups/
 .DS_Store
 openvpn/
 easy-rsa/pki/vars

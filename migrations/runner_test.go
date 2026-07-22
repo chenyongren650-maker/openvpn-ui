@@ -1,0 +1,374 @@
+package migrations
+
+import (
+	"context"
+	"database/sql"
+	"fmt"
+	"os"
+	"path/filepath"
+	"reflect"
+	"strings"
+	"testing"
+	"time"
+)
+
+var legacyTableNames = []string{
+	"user",
+	"settings",
+	"o_v_config",
+	"o_v_client_config",
+	"easy_r_s_a_config",
+}
+
+func TestUpgradePreservesLegacyTablesAndCreatesFoundationSchema(t *testing.T) {
+	databasePath := filepath.Join(t.TempDir(), "db", "data.db")
+	legacySchema := createLegacyDatabase(t, databasePath)
+
+	result, err := run(context.Background(), databasePath, registeredMigrations, fixedClock)
+	if err != nil {
+		t.Fatalf("run migration: %v", err)
+	}
+	if !reflect.DeepEqual(result.AppliedVersions, []int64{1}) {
+		t.Fatalf("applied versions = %v, want [1]", result.AppliedVersions)
+	}
+	if result.BackupPath == "" {
+		t.Fatal("expected a pre-migration backup")
+	}
+
+	db := openTestDatabase(t, databasePath)
+	defer db.Close()
+
+	for _, tableName := range []string{
+		"schema_migrations",
+		"certificates",
+		"totp_identities",
+		"audit_logs",
+	} {
+		assertTableExists(t, db, tableName, true)
+	}
+	assertLegacyDatabaseUnchanged(t, db, legacySchema)
+
+	var migrationCount int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM schema_migrations WHERE version = 1`).Scan(&migrationCount); err != nil {
+		t.Fatalf("count migration rows: %v", err)
+	}
+	if migrationCount != 1 {
+		t.Fatalf("migration row count = %d, want 1", migrationCount)
+	}
+
+	assertBackupIsValidPreMigrationDatabase(t, result.BackupPath, legacySchema)
+	assertPathPermissions(t, filepath.Dir(result.BackupPath), 0o700)
+	assertPathPermissions(t, result.BackupPath, 0o600)
+}
+
+func TestMigrationIsIdempotent(t *testing.T) {
+	databasePath := filepath.Join(t.TempDir(), "db", "data.db")
+	createLegacyDatabase(t, databasePath)
+
+	firstResult, err := run(context.Background(), databasePath, registeredMigrations, fixedClock)
+	if err != nil {
+		t.Fatalf("first migration run: %v", err)
+	}
+	secondResult, err := run(context.Background(), databasePath, registeredMigrations, fixedClock)
+	if err != nil {
+		t.Fatalf("second migration run: %v", err)
+	}
+
+	if !reflect.DeepEqual(firstResult.AppliedVersions, []int64{1}) {
+		t.Fatalf("first applied versions = %v, want [1]", firstResult.AppliedVersions)
+	}
+	if len(secondResult.AppliedVersions) != 0 {
+		t.Fatalf("second applied versions = %v, want none", secondResult.AppliedVersions)
+	}
+	if secondResult.BackupPath != "" {
+		t.Fatalf("second run created unexpected backup %q", secondResult.BackupPath)
+	}
+
+	backupEntries, err := os.ReadDir(filepath.Join(filepath.Dir(databasePath), "backups"))
+	if err != nil {
+		t.Fatalf("read backup directory: %v", err)
+	}
+	if len(backupEntries) != 1 {
+		t.Fatalf("backup count = %d, want 1", len(backupEntries))
+	}
+
+	db := openTestDatabase(t, databasePath)
+	defer db.Close()
+	var migrationCount int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM schema_migrations`).Scan(&migrationCount); err != nil {
+		t.Fatalf("count migration rows: %v", err)
+	}
+	if migrationCount != 1 {
+		t.Fatalf("migration row count = %d, want 1", migrationCount)
+	}
+}
+
+func TestFailedMigrationRollsBackEntirePendingBatch(t *testing.T) {
+	databasePath := filepath.Join(t.TempDir(), "db", "data.db")
+	legacySchema := createLegacyDatabase(t, databasePath)
+
+	failingMigrations := append([]Migration{}, registeredMigrations...)
+	failingMigrations = append(failingMigrations, Migration{
+		Version: 2,
+		Name:    "forced_failure",
+		Up: []string{
+			`CREATE TABLE should_rollback (id INTEGER PRIMARY KEY)`,
+			`CREATE TABL invalid_sql (id INTEGER PRIMARY KEY)`,
+		},
+		Down: []string{`DROP TABLE IF EXISTS should_rollback`},
+	})
+
+	result, err := run(context.Background(), databasePath, failingMigrations, fixedClock)
+	if err == nil {
+		t.Fatal("expected migration failure")
+	}
+	if !strings.Contains(err.Error(), "migration 2 (forced_failure), statement 2") {
+		t.Fatalf("unexpected migration error: %v", err)
+	}
+	if len(result.AppliedVersions) != 0 {
+		t.Fatalf("reported applied versions after rollback: %v", result.AppliedVersions)
+	}
+	if result.BackupPath == "" {
+		t.Fatal("expected backup to be retained after migration failure")
+	}
+
+	db := openTestDatabase(t, databasePath)
+	defer db.Close()
+	for _, tableName := range []string{
+		"schema_migrations",
+		"certificates",
+		"totp_identities",
+		"audit_logs",
+		"should_rollback",
+	} {
+		assertTableExists(t, db, tableName, false)
+	}
+	assertLegacyDatabaseUnchanged(t, db, legacySchema)
+	assertBackupIsValidPreMigrationDatabase(t, result.BackupPath, legacySchema)
+}
+
+func TestBackupFailureStopsBeforeMigration(t *testing.T) {
+	databasePath := filepath.Join(t.TempDir(), "db", "data.db")
+	legacySchema := createLegacyDatabase(t, databasePath)
+	backupDirectoryPath := filepath.Join(filepath.Dir(databasePath), "backups")
+	if err := os.WriteFile(backupDirectoryPath, []byte("blocks backup directory"), 0o600); err != nil {
+		t.Fatalf("create backup path blocker: %v", err)
+	}
+
+	result, err := run(context.Background(), databasePath, registeredMigrations, fixedClock)
+	if err == nil {
+		t.Fatal("expected backup failure")
+	}
+	if !strings.Contains(err.Error(), "back up SQLite database before migration") {
+		t.Fatalf("unexpected backup error: %v", err)
+	}
+	if len(result.AppliedVersions) != 0 || result.BackupPath != "" {
+		t.Fatalf("unexpected migration result after backup failure: %+v", result)
+	}
+
+	db := openTestDatabase(t, databasePath)
+	defer db.Close()
+	assertTableExists(t, db, "schema_migrations", false)
+	assertTableExists(t, db, "certificates", false)
+	assertLegacyDatabaseUnchanged(t, db, legacySchema)
+}
+
+func TestNewDatabaseDoesNotCreateMeaninglessBackup(t *testing.T) {
+	databasePath := filepath.Join(t.TempDir(), "db", "data.db")
+
+	result, err := run(context.Background(), databasePath, registeredMigrations, fixedClock)
+	if err != nil {
+		t.Fatalf("initialize new database: %v", err)
+	}
+	if result.BackupPath != "" {
+		t.Fatalf("new database created unexpected backup %q", result.BackupPath)
+	}
+
+	db := openTestDatabase(t, databasePath)
+	defer db.Close()
+	for _, tableName := range []string{
+		"schema_migrations",
+		"certificates",
+		"totp_identities",
+		"audit_logs",
+	} {
+		assertTableExists(t, db, tableName, true)
+	}
+}
+
+func TestTOTPIdentitySchemaDoesNotStoreSecrets(t *testing.T) {
+	databasePath := filepath.Join(t.TempDir(), "db", "data.db")
+	if _, err := run(context.Background(), databasePath, registeredMigrations, fixedClock); err != nil {
+		t.Fatalf("initialize database: %v", err)
+	}
+
+	db := openTestDatabase(t, databasePath)
+	defer db.Close()
+	rows, err := db.Query(`PRAGMA table_info(totp_identities)`)
+	if err != nil {
+		t.Fatalf("read totp_identities columns: %v", err)
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var columnID int
+		var columnName, columnType string
+		var notNull, primaryKey int
+		var defaultValue sql.NullString
+		if err := rows.Scan(
+			&columnID,
+			&columnName,
+			&columnType,
+			&notNull,
+			&defaultValue,
+			&primaryKey,
+		); err != nil {
+			t.Fatalf("scan totp_identities column: %v", err)
+		}
+		normalizedName := strings.ToLower(columnName)
+		if strings.Contains(normalizedName, "secret") || strings.Contains(normalizedName, "seed") {
+			t.Fatalf("sensitive column found in totp_identities: %s", columnName)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("iterate totp_identities columns: %v", err)
+	}
+}
+
+func fixedClock() time.Time {
+	return time.Date(2026, time.July, 22, 10, 30, 0, 123456789, time.UTC)
+}
+
+func createLegacyDatabase(t *testing.T, databasePath string) map[string]string {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(databasePath), 0o700); err != nil {
+		t.Fatalf("create legacy database directory: %v", err)
+	}
+	db := openTestDatabase(t, databasePath)
+
+	statements := []string{
+		`CREATE TABLE user (id INTEGER PRIMARY KEY, login TEXT NOT NULL UNIQUE, marker TEXT NOT NULL)`,
+		`CREATE TABLE settings (id INTEGER PRIMARY KEY, profile TEXT NOT NULL UNIQUE, marker TEXT NOT NULL)`,
+		`CREATE TABLE o_v_config (id INTEGER PRIMARY KEY, profile TEXT NOT NULL UNIQUE, marker TEXT NOT NULL)`,
+		`CREATE TABLE o_v_client_config (id INTEGER PRIMARY KEY, profile TEXT NOT NULL UNIQUE, marker TEXT NOT NULL)`,
+		`CREATE TABLE easy_r_s_a_config (id INTEGER PRIMARY KEY, profile TEXT NOT NULL UNIQUE, marker TEXT NOT NULL)`,
+		`INSERT INTO user (id, login, marker) VALUES (1, 'test-admin', 'preserve-user')`,
+		`INSERT INTO settings (id, profile, marker) VALUES (1, 'default', 'preserve-settings')`,
+		`INSERT INTO o_v_config (id, profile, marker) VALUES (1, 'default', 'preserve-server-config')`,
+		`INSERT INTO o_v_client_config (id, profile, marker) VALUES (1, 'default', 'preserve-client-config')`,
+		`INSERT INTO easy_r_s_a_config (id, profile, marker) VALUES (1, 'default', 'preserve-easyrsa-config')`,
+	}
+	for statementIndex, statement := range statements {
+		if _, err := db.Exec(statement); err != nil {
+			db.Close()
+			t.Fatalf("prepare legacy database statement %d: %v", statementIndex+1, err)
+		}
+	}
+
+	schema := readLegacySchema(t, db)
+	if err := db.Close(); err != nil {
+		t.Fatalf("close legacy database: %v", err)
+	}
+	return schema
+}
+
+func openTestDatabase(t *testing.T, databasePath string) *sql.DB {
+	t.Helper()
+	db, err := openSQLite(databasePath)
+	if err != nil {
+		t.Fatalf("open test database: %v", err)
+	}
+	if err := db.Ping(); err != nil {
+		db.Close()
+		t.Fatalf("connect to test database: %v", err)
+	}
+	return db
+}
+
+func readLegacySchema(t *testing.T, db *sql.DB) map[string]string {
+	t.Helper()
+	schema := make(map[string]string, len(legacyTableNames))
+	for _, tableName := range legacyTableNames {
+		var createSQL string
+		if err := db.QueryRow(
+			`SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ?`,
+			tableName,
+		).Scan(&createSQL); err != nil {
+			t.Fatalf("read schema for %s: %v", tableName, err)
+		}
+		schema[tableName] = createSQL
+	}
+	return schema
+}
+
+func assertLegacyDatabaseUnchanged(t *testing.T, db *sql.DB, expectedSchema map[string]string) {
+	t.Helper()
+	actualSchema := readLegacySchema(t, db)
+	if !reflect.DeepEqual(actualSchema, expectedSchema) {
+		t.Fatalf("legacy table schema changed:\nactual: %#v\nexpected: %#v", actualSchema, expectedSchema)
+	}
+
+	expectedMarkers := map[string]string{
+		"user":              "preserve-user",
+		"settings":          "preserve-settings",
+		"o_v_config":        "preserve-server-config",
+		"o_v_client_config": "preserve-client-config",
+		"easy_r_s_a_config": "preserve-easyrsa-config",
+	}
+	for tableName, expectedMarker := range expectedMarkers {
+		var actualMarker string
+		query := fmt.Sprintf(`SELECT marker FROM %q WHERE id = 1`, tableName)
+		if err := db.QueryRow(query).Scan(&actualMarker); err != nil {
+			t.Fatalf("read marker from %s: %v", tableName, err)
+		}
+		if actualMarker != expectedMarker {
+			t.Fatalf("marker in %s = %q, want %q", tableName, actualMarker, expectedMarker)
+		}
+	}
+}
+
+func assertBackupIsValidPreMigrationDatabase(
+	t *testing.T,
+	backupPath string,
+	expectedLegacySchema map[string]string,
+) {
+	t.Helper()
+	backupDB := openTestDatabase(t, backupPath)
+	defer backupDB.Close()
+
+	var integrityResult string
+	if err := backupDB.QueryRow(`PRAGMA integrity_check`).Scan(&integrityResult); err != nil {
+		t.Fatalf("verify backup integrity: %v", err)
+	}
+	if integrityResult != "ok" {
+		t.Fatalf("backup integrity result = %q, want ok", integrityResult)
+	}
+	assertLegacyDatabaseUnchanged(t, backupDB, expectedLegacySchema)
+	assertTableExists(t, backupDB, "schema_migrations", false)
+	assertTableExists(t, backupDB, "certificates", false)
+}
+
+func assertTableExists(t *testing.T, db *sql.DB, tableName string, expected bool) {
+	t.Helper()
+	var count int
+	if err := db.QueryRow(
+		`SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = ?`,
+		tableName,
+	).Scan(&count); err != nil {
+		t.Fatalf("check table %s: %v", tableName, err)
+	}
+	if actual := count == 1; actual != expected {
+		t.Fatalf("table %s existence = %t, want %t", tableName, actual, expected)
+	}
+}
+
+func assertPathPermissions(t *testing.T, path string, expected os.FileMode) {
+	t.Helper()
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("stat %s: %v", path, err)
+	}
+	if actual := info.Mode().Perm(); actual != expected {
+		t.Fatalf("permissions for %s = %04o, want %04o", path, actual, expected)
+	}
+}
