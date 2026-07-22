@@ -1,23 +1,37 @@
 {{if .flash}}
     {{if (index .flash "warning")}}
         <div class="alert alert-warning" role="alert">
-            <button type="button" class="close" data-dismiss="alert" aria-label="Close"><span aria-hidden="true">&times;</span></button>
+            <button type="button" class="close" data-dismiss="alert" aria-label="{{t .Localizer "common.close"}}"><span aria-hidden="true">&times;</span></button>
             <span class="glyphicon glyphicon-exclamation-sign" aria-hidden="true"></span>
-            <span class="sr-only">Warning:</span>
+            <span class="sr-only">{{t .Localizer "alert.warning"}}：</span>
             {{index .flash "warning"}}
+            {{if (index .flash "warning_code")}}
+              <details class="mt-2">
+                <summary>{{t .Localizer "alert.technical_details"}}</summary>
+                <code>{{index .flash "warning_code"}}</code>
+              </details>
+            {{end}}
         </div>
-    {{else if (index .flash "error")}}
+    {{end}}
+    {{if (index .flash "error")}}
         <div class="alert alert-danger" role="alert">
-            <button type="button" class="close" data-dismiss="alert" aria-label="Close"><span aria-hidden="true">&times;</span></button>
+            <button type="button" class="close" data-dismiss="alert" aria-label="{{t .Localizer "common.close"}}"><span aria-hidden="true">&times;</span></button>
             <span class="glyphicon glyphicon-exclamation-sign" aria-hidden="true"></span>
-            <span class="sr-only">Error:</span>
+            <span class="sr-only">{{t .Localizer "alert.error"}}：</span>
             {{index .flash "error"}}
+            {{if (index .flash "error_code")}}
+              <details class="mt-2">
+                <summary>{{t .Localizer "alert.technical_details"}}</summary>
+                <code>{{index .flash "error_code"}}{{if (index .flash "error_detail")}}: {{index .flash "error_detail"}}{{end}}</code>
+              </details>
+            {{end}}
         </div>
-    {{else if (index .flash "success")}}
+    {{end}}
+    {{if (index .flash "success")}}
         <div class="alert alert-success" role="alert">
-            <button type="button" class="close" data-dismiss="alert" aria-label="Close"><span aria-hidden="true">&times;</span></button>
+            <button type="button" class="close" data-dismiss="alert" aria-label="{{t .Localizer "common.close"}}"><span aria-hidden="true">&times;</span></button>
             <span class="glyphicon glyphicon-exclamation-sign" aria-hidden="true"></span>
-            <span class="sr-only">Success:</span>
+            <span class="sr-only">{{t .Localizer "alert.success"}}：</span>
             {{index .flash "success"}}
         </div>
     {{end}}

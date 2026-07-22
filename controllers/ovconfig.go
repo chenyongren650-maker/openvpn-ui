@@ -26,7 +26,7 @@ func (c *OVConfigController) NestPrepare() {
 		return
 	}
 	c.Data["breadcrumbs"] = &BreadCrumbs{
-		Title: "OpenVPN Server configuration",
+		Title: c.T("breadcrumb.server_config"),
 	}
 }
 
@@ -36,19 +36,20 @@ func (c *OVConfigController) Get() {
 	besettings := models.Settings{Profile: "default"}
 	_ = besettings.Read("Profile")
 	c.Data["BeeSettings"] = &besettings
-
-	destPath := filepath.Join(state.GlobalCfg.OVConfigPath, "server.conf")
-	serverConf, err := os.ReadFile(destPath)
-	if err != nil {
-		logs.Error(err)
-		return
-	}
-	c.Data["ServerConfig"] = string(serverConf)
 	c.Data["xsrfdata"] = template.HTML(c.XSRFFormHTML())
 	cfg := models.OVConfig{Profile: "default"}
 	_ = cfg.Read("Profile")
 	c.Data["Settings"] = &cfg
 
+	destPath := filepath.Join(state.GlobalCfg.OVConfigPath, "server.conf")
+	serverConf, err := os.ReadFile(destPath)
+	if err != nil {
+		flash := web.NewFlash()
+		c.FlashError(flash, "error.file_read", "ERR_SERVER_READ", err, true)
+		flash.Store(&c.Controller)
+		return
+	}
+	c.Data["ServerConfig"] = string(serverConf)
 }
 
 // @router /ov/config [Post]
@@ -64,7 +65,7 @@ func (c *OVConfigController) Post() {
 	logs.Info("Form data before parsing: %v", c.Ctx.Request.Form)
 	if err := c.ParseForm(&cfg); err != nil {
 		logs.Warning(err)
-		flash.Error(err.Error())
+		c.FlashError(flash, "error.form_parse", "ERR_SERVER_FORM", err, true)
 		flash.Store(&c.Controller)
 		return
 	}
@@ -81,7 +82,7 @@ func (c *OVConfigController) Post() {
 	err := config.SaveToFile(filepath.Join(c.ConfigDir, "openvpn-server-config.tpl"), cfg.Config, destPath)
 	if err != nil {
 		logs.Warning(err)
-		flash.Error(err.Error())
+		c.FlashError(flash, "error.file_write", "ERR_SERVER_WRITE", err, true)
 		flash.Store(&c.Controller)
 		return
 	}
@@ -89,12 +90,13 @@ func (c *OVConfigController) Post() {
 	logs.Info("Post: Updating configuration in database")
 	o := orm.NewOrm()
 	if _, err := o.Update(&cfg); err != nil {
-		flash.Error(err.Error())
+		c.FlashError(flash, "error.database_update", "ERR_SERVER_DB", err, true)
 	} else {
-		flash.Success("Post: Config has been updated")
+		c.FlashSuccess(flash, "config.updated")
 		client := mi.NewClient(state.GlobalCfg.MINetwork, state.GlobalCfg.MIAddress)
 		if err := client.Signal("SIGTERM"); err != nil {
-			flash.Warning("Config has been updated but OpenVPN server was NOT reloaded: " + err.Error())
+			c.FlashWarning(flash, "config.updated_reload_failed")
+			flash.Set("warning_code", "ERR_OPENVPN_RELOAD")
 		}
 	}
 
@@ -102,7 +104,8 @@ func (c *OVConfigController) Post() {
 	serverConf, err := os.ReadFile(destPath)
 	if err != nil {
 		logs.Error("Error reading server config from file:", err)
-		flash.Error("Error reading server config from file")
+		c.FlashError(flash, "error.file_read", "ERR_SERVER_READ", err, true)
+		flash.Store(&c.Controller)
 		return
 	}
 	c.Data["ServerConfig"] = string(serverConf)
@@ -120,7 +123,7 @@ func (c *OVConfigController) Edit() {
 	//logs.Info("Post: Parsing form data")
 	if err := c.ParseForm(&cfg); err != nil {
 		logs.Warning(err)
-		flash.Error(err.Error())
+		c.FlashError(flash, "error.form_parse", "ERR_SERVER_FORM", err, true)
 		flash.Store(&c.Controller)
 		return
 	}
@@ -135,17 +138,19 @@ func (c *OVConfigController) Edit() {
 	err := lib.ConfSaveToFile(destPath, c.GetString("ServerConfig"))
 	if err != nil {
 		logs.Error("Error saving server config to file:", err)
-		flash.Error("Error saving server config to file")
+		c.FlashError(flash, "error.file_write", "ERR_SERVER_WRITE", err, true)
+		flash.Store(&c.Controller)
 		return
 	} else {
 		//logs.Info("Edit: Server config saved to file:", destPath)
-		flash.Success("Config has been updated")
+		c.FlashSuccess(flash, "config.updated")
 	}
 
 	serverConf, err := os.ReadFile(destPath)
 	if err != nil {
 		logs.Error("Error reading server config from file:", err)
-		flash.Error("Error reading server config from file")
+		c.FlashError(flash, "error.file_read", "ERR_SERVER_READ", err, true)
+		flash.Store(&c.Controller)
 		return
 	}
 	c.Data["ServerConfig"] = string(serverConf)

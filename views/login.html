@@ -1,9 +1,9 @@
 <!DOCTYPE html>
-<html>
+<html lang="{{.Language}}">
 <head>
   <meta charset="utf-8">
   <meta http-equiv="X-UA-Compatible" content="IE=edge">
-  <title>OpenVPN UI | Log in</title>
+  <title>OpenVPN UI | {{t .Localizer "login.title"}}</title>
   <!-- Tell the browser to be responsive to screen width -->
   <meta content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no" name="viewport">
   <!-- Font Awesome 5.15.3 -->
@@ -21,6 +21,11 @@
   <link rel="icon" type="image/png" sizes="192x192" href="/static/img/favicon/favicon-192x192.png">
 </head>
 <body class="hold-transition login-page">
+<div class="position-absolute" style="right: 1rem; top: 1rem;">
+  <a href="{{.LanguageURLZhCN}}" lang="zh-CN">简体中文</a>
+  <span aria-hidden="true"> / </span>
+  <a href="{{.LanguageURLEnUS}}" lang="en-US">English</a>
+</div>
 <div class="login-box">
   <div class="login-logo">
     <a href="#"><b>OpenVPN</b> UI</a>
@@ -28,17 +33,18 @@
   <!-- /.login-logo -->
   <div class="card">
     <div class="card-body login-card-body">
-      <p class="login-box-msg"><small>Sign in to start your session</small></p>
+      <p class="login-box-msg"><small>{{t .Localizer "login.prompt"}}</small></p>
 
       {{if .error}}
         <div class="alert alert-danger" role="alert">
           {{.error}}
+          {{if .error_code}}<details class="mt-2"><summary>{{t .Localizer "alert.technical_details"}}</summary><code>{{.error_code}}</code></details>{{end}}
         </div>
       {{end}}
 
       <form action="{{urlfor "LoginController.Login"}}" method="post">
         <div class="input-group mb-3">
-          <input type="text" class="form-control" name="login" placeholder="Login">
+          <input type="text" class="form-control" name="login" placeholder="{{t .Localizer "login.username"}}">
           <div class="input-group-append">
             <div class="input-group-text">
               <span class="fas fa-user"></span>
@@ -47,7 +53,7 @@
         </div>
 
         <div class="input-group mb-3">
-          <input type="password" class="form-control" name="password" placeholder="Password">
+          <input type="password" class="form-control" name="password" placeholder="{{t .Localizer "login.password"}}">
           <div class="input-group-append">
             <div class="input-group-text">
               <span class="fas fa-lock"></span>
@@ -61,15 +67,15 @@
         {{ .xsrfdata }}
         <div class="com-md-12">
             <button type="submit" class="btn btn-primary btn-block">
-            <img src="/static/img/openvpn-win.svg" alt="Sign In Icon" style="height: 23px; vertical-align: middle; filter: invert(1);"> &nbsp;Sign In</button>
+            <img src="/static/img/openvpn-win.svg" alt="{{t .Localizer "login.sign_in_icon"}}" style="height: 23px; vertical-align: middle; filter: invert(1);"> &nbsp;{{t .Localizer "login.sign_in"}}</button>
           </div>
         <!-- /.col -->
       </form>
       <br>
       <a href="{{urlfor "LoginController.GoogleLogin"}}" class="btn btn-block btn-danger">
-        <i class="fab fa-google"></i> &nbsp;Sign in with Google
+        <i class="fab fa-google"></i> &nbsp;{{t .Localizer "login.google_sign_in"}}
       </a>
-      <p class="login-box-msg"><small><a href="https://github.com/d3vilh/openvpn-ui?tab=readme-ov-file#authentication-with-google-apis-oauth-20" target="_blank">How to Sign In</a> with Google</small></p>
+      <p class="login-box-msg"><small><a href="https://github.com/d3vilh/openvpn-ui?tab=readme-ov-file#authentication-with-google-apis-oauth-20" target="_blank">{{t .Localizer "login.google_help"}}</a></small></p>
     </div>
     <!-- /.login-box-body -->
   </div>

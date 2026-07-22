@@ -20,7 +20,7 @@ func (c *DangerController) NestPrepare() {
 func (c *DangerController) Get() {
 	c.TplName = "maintenance.html"
 	c.Data["breadcrumbs"] = &BreadCrumbs{
-		Title: "Maintenance",
+		Title: c.T("breadcrumb.maintenance"),
 	}
 }
 
@@ -31,11 +31,11 @@ func (c *DangerController) DeletePKI() {
 	name := c.GetString(":key")
 	//logs.Info("Controller: Deleting:", name)
 	if err := lib.DeletePKI(name); err != nil {
-		logs.Error(err)
-		flash.Error(err.Error())
+		logs.Error("ERR_MAINTENANCE_DELETE")
+		c.FlashError(flash, "maintenance.delete_failed", "ERR_MAINTENANCE_DELETE", err, false)
 		flash.Store(&c.Controller)
 	} else {
-		flash.Success("Success! The \"" + name + "\" has been deleted")
+		c.FlashSuccess(flash, "maintenance.deleted", name)
 		flash.Store(&c.Controller)
 	}
 	c.Data["Flash"] = flash.Data
@@ -50,11 +50,11 @@ func (c *DangerController) InitPKI() {
 	name := c.GetString(":key")
 	//logs.Info("Controller: Runing init for:", name)
 	if err := lib.InitPKI(name); err != nil {
-		logs.Error(err)
-		flash.Error(err.Error())
+		logs.Error("ERR_MAINTENANCE_INIT")
+		c.FlashError(flash, "maintenance.initialize_failed", "ERR_MAINTENANCE_INIT", err, false)
 		flash.Store(&c.Controller)
 	} else {
-		flash.Success("Success! The \"" + name + "\" has been initialized.")
+		c.FlashSuccess(flash, "maintenance.initialized", name)
 		flash.Store(&c.Controller)
 	}
 	c.Data["Flash"] = flash.Data
@@ -69,12 +69,12 @@ func (c *DangerController) RestartContainer() {
 	name := c.GetString(":key")
 	//logs.Info("Controller: Restarting:", name)
 	if err := lib.RestartContainer(name); err != nil {
-		logs.Error("Error restarting container:", err)
+		logs.Error("ERR_CONTAINER_RESTART")
 		//	logs.Error("Stack trace:", string(debug.Stack()))
-		flash.Error(err.Error())
+		c.FlashError(flash, "maintenance.restart_failed", "ERR_CONTAINER_RESTART", err, false)
 		flash.Store(&c.Controller)
 	} else {
-		flash.Success("Success! Container \"" + name + "\" has been restarted")
+		c.FlashSuccess(flash, "maintenance.restarted", name)
 		flash.Store(&c.Controller)
 	}
 	c.Data["Flash"] = flash.Data

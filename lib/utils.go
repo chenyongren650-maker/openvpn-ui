@@ -8,11 +8,12 @@ import (
 
 	"github.com/beego/beego/v2/core/logs"
 	"github.com/beego/beego/v2/core/validation"
+	"github.com/d3vilh/openvpn-ui/i18n"
 )
 
 // CreateValidationMap ranslates validation structure to map
 // that can be easly presented in template
-func CreateValidationMap(valid validation.Validation) map[string]map[string]string {
+func CreateValidationMap(valid validation.Validation, localizer *i18n.Localizer) map[string]map[string]string {
 	v := make(map[string]map[string]string)
 	/*
 			{
@@ -39,7 +40,22 @@ func CreateValidationMap(valid validation.Validation) map[string]map[string]stri
 		if _, ok := v[field]; !ok {
 			v[field] = make(map[string]string)
 		}
-		v[field][errorType] = err.Message
+		message := localizer.T("validation.invalid")
+		switch err.Name {
+		case "Required":
+			message = localizer.T("validation.required")
+		case "Email":
+			message = localizer.T("validation.email")
+		case "MinSize":
+			message = localizer.T("validation.min_size", err.LimitValue)
+		case "MaxSize":
+			message = localizer.T("validation.max_size", err.LimitValue)
+		default:
+			if err.Message == "Passwords do not match" {
+				message = localizer.T("validation.password_mismatch")
+			}
+		}
+		v[field][errorType] = message
 	}
 	return v
 

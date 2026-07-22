@@ -27,7 +27,7 @@ func (c *APISessionController) Get() {
 	client := mi.NewClient(state.GlobalCfg.MINetwork, state.GlobalCfg.MIAddress)
 	status, err := client.GetStatus()
 	if err != nil {
-		c.ServeJSONError(err.Error())
+		c.ServeJSONError("api.error.session_list", "ERR_SESSION_LIST", err, true)
 	} else {
 		c.ServeJSONData(status)
 	}
@@ -44,13 +44,13 @@ func (c *APISessionController) Kill() {
 	client := mi.NewClient(state.GlobalCfg.MINetwork, state.GlobalCfg.MIAddress)
 	p := KillParams{}
 	if err := json.Unmarshal(c.Ctx.Input.RequestBody, &p); err != nil {
-		c.ServeJSONError(err.Error())
+		c.ServeJSONError("api.error.invalid_request", "ERR_INVALID_REQUEST", err, true)
 		return
 	}
 
-	if r, err := client.KillSession(p.Cname); err != nil {
-		c.ServeJSONError(err.Error())
+	if _, err := client.KillSession(p.Cname); err != nil {
+		c.ServeJSONError("api.error.disconnect", "ERR_DISCONNECT", err, true)
 	} else {
-		c.ServeJSONMessage(r)
+		c.ServeJSONMessage(c.T("api.disconnect.success"))
 	}
 }

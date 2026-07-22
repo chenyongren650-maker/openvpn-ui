@@ -116,7 +116,7 @@ func trim(s string) string {
 }
 
 func CreateCertificate(name string, staticip string, passphrase string, expiredays string, email string, country string, province string, city string, org string, orgunit string, tfaname string, tfaissuer string) error {
-	logs.Info("Lib: Creating certificate with parameters: name=%s, staticip=%s, passphrase=%s, expiredays=%s, email=%s, country=%s, province=%s, city=%s, org=%s, orgunit=%s, tfaname=%s, tfaissuer=%s", name, staticip, passphrase, expiredays, email, country, province, city, org, orgunit, tfaname, tfaissuer)
+	logs.Info("Lib: Creating certificate: name=%s, staticip=%s, expiredays=%s", name, staticip, expiredays)
 	path := state.GlobalCfg.OVConfigPath + "/pki/index.txt"
 	haveip := staticip != ""
 	pass := passphrase != ""
@@ -153,10 +153,9 @@ func CreateCertificate(name string, staticip string, passphrase string, expireda
 						"export EASYRSA_REQ_OU=%s &&"+
 						"./genclient.sh %s %s", name, tfaname, tfaissuer, expiredays, email, country, province, city, org, orgunit, name, staticip))
 			cmd.Dir = state.GlobalCfg.OVConfigPath
-			output, err := cmd.CombinedOutput()
+			_, err := cmd.CombinedOutput()
 			if err != nil {
-				logs.Debug(string(output))
-				logs.Error(err)
+				logs.Error("ERR_CERT_CREATE_COMMAND")
 				return err
 			}
 			return nil
@@ -179,10 +178,9 @@ func CreateCertificate(name string, staticip string, passphrase string, expireda
 						"./genclient.sh %s %s &&"+
 						"echo 'ifconfig-push %s 255.255.255.0' > /etc/openvpn/staticclients/%s", name, tfaname, tfaissuer, expiredays, email, country, province, city, org, orgunit, name, staticip, staticip, name))
 			cmd.Dir = state.GlobalCfg.OVConfigPath
-			output, err := cmd.CombinedOutput()
+			_, err := cmd.CombinedOutput()
 			if err != nil {
-				logs.Debug(string(output))
-				logs.Error(err)
+				logs.Error("ERR_CERT_CREATE_COMMAND")
 				return err
 			}
 			return nil
@@ -207,10 +205,9 @@ func CreateCertificate(name string, staticip string, passphrase string, expireda
 						"export EASYRSA_REQ_OU=%s &&"+
 						"./genclient.sh %s %s %s", name, tfaname, tfaissuer, expiredays, email, country, province, city, org, orgunit, name, staticip, passphrase))
 			cmd.Dir = state.GlobalCfg.OVConfigPath
-			output, err := cmd.CombinedOutput()
+			_, err := cmd.CombinedOutput()
 			if err != nil {
-				logs.Debug(string(output))
-				logs.Error(err)
+				logs.Error("ERR_CERT_CREATE_COMMAND")
 				return err
 			}
 			return nil
@@ -233,10 +230,9 @@ func CreateCertificate(name string, staticip string, passphrase string, expireda
 						"./genclient.sh %s %s %s &&"+
 						"echo 'ifconfig-push %s 255.255.255.0' > /etc/openvpn/staticclients/%s", name, tfaname, tfaissuer, expiredays, email, country, province, city, org, orgunit, name, staticip, passphrase, staticip, name))
 			cmd.Dir = state.GlobalCfg.OVConfigPath
-			output, err := cmd.CombinedOutput()
+			_, err := cmd.CombinedOutput()
 			if err != nil {
-				logs.Debug(string(output))
-				logs.Error(err)
+				logs.Error("ERR_CERT_CREATE_COMMAND")
 				return err
 			}
 			return nil
@@ -253,10 +249,9 @@ func RevokeCertificate(name string, serial string, tfaname string) error {
 				"export TFA_NAME=%s &&"+
 				"./revoke.sh %s %s", name, tfaname, name, serial))
 	cmd.Dir = state.GlobalCfg.OVConfigPath
-	output, err := cmd.CombinedOutput()
+	_, err := cmd.CombinedOutput()
 	if err != nil {
-		logs.Debug(string(output))
-		logs.Error(err)
+		logs.Error("ERR_CERT_REVOKE_COMMAND")
 		return err
 	}
 	return nil
@@ -268,10 +263,9 @@ func Restart() error {
 			"cd /opt/scripts/ && "+
 				"./restart.sh"))
 	cmd.Dir = state.GlobalCfg.OVConfigPath
-	output, err := cmd.CombinedOutput()
+	_, err := cmd.CombinedOutput()
 	if err != nil {
-		logs.Debug(string(output))
-		logs.Error(err)
+		logs.Error("ERR_OPENVPN_RESTART_COMMAND")
 		return err
 	}
 	return nil
@@ -285,10 +279,9 @@ func BurnCertificate(CN string, serial string, tfaname string) error {
 				"export TFA_NAME=%s &&"+
 				"./rmcert.sh %s %s", tfaname, CN, serial))
 	cmd.Dir = state.GlobalCfg.OVConfigPath
-	output, err := cmd.CombinedOutput()
+	_, err := cmd.CombinedOutput()
 	if err != nil {
-		logs.Debug(string(output))
-		logs.Error(err)
+		logs.Error("ERR_CERT_REMOVE_COMMAND")
 		return err
 	}
 	return nil
@@ -302,10 +295,9 @@ func RenewCertificate(name string, localip string, serial string, tfaname string
 				"export TFA_NAME=%s &&"+
 				"./renew.sh %s %s %s", name, tfaname, name, localip, serial))
 	cmd.Dir = state.GlobalCfg.OVConfigPath
-	output, err := cmd.CombinedOutput()
+	_, err := cmd.CombinedOutput()
 	if err != nil {
-		logs.Debug(string(output))
-		logs.Error(err)
+		logs.Error("ERR_CERT_RENEW_COMMAND")
 		return err
 	}
 	return nil

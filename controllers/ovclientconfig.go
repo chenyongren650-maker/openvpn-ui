@@ -26,7 +26,7 @@ func (c *OVClientConfigController) NestPrepare() {
 		return
 	}
 	c.Data["breadcrumbs"] = &BreadCrumbs{
-		Title: "OpenVPN Client configuration",
+		Title: c.T("breadcrumb.client_config"),
 	}
 }
 
@@ -35,19 +35,20 @@ func (c *OVClientConfigController) Get() {
 	besettings := models.Settings{Profile: "default"}
 	_ = besettings.Read("Profile")
 	c.Data["BeeSettings"] = &besettings
-
-	destPathClientTempl := filepath.Join(state.GlobalCfg.OVConfigPath, "config/client.conf")
-	clientTemplate, err := os.ReadFile(destPathClientTempl)
-	if err != nil {
-		logs.Error(err)
-		return
-	}
-	c.Data["ClientTemplate"] = string(clientTemplate)
 	c.Data["xsrfdata"] = template.HTML(c.XSRFFormHTML())
 	cfg := models.OVClientConfig{Profile: "default"}
 	_ = cfg.Read("Profile")
 	c.Data["Settings"] = &cfg
 
+	destPathClientTempl := filepath.Join(state.GlobalCfg.OVConfigPath, "config/client.conf")
+	clientTemplate, err := os.ReadFile(destPathClientTempl)
+	if err != nil {
+		flash := web.NewFlash()
+		c.FlashError(flash, "error.file_read", "ERR_CLIENT_READ", err, true)
+		flash.Store(&c.Controller)
+		return
+	}
+	c.Data["ClientTemplate"] = string(clientTemplate)
 }
 
 func (c *OVClientConfigController) Post() {
@@ -61,7 +62,7 @@ func (c *OVClientConfigController) Post() {
 	//logs.Info("Post: Parsing form data")
 	if err := c.ParseForm(&cfg); err != nil {
 		logs.Warning(err)
-		flash.Error(err.Error())
+		c.FlashError(flash, "error.form_parse", "ERR_CLIENT_FORM", err, true)
 		flash.Store(&c.Controller)
 		return
 	}
@@ -75,7 +76,7 @@ func (c *OVClientConfigController) Post() {
 	err := clientconfig.SaveToFile(filepath.Join(c.ConfigDir, "openvpn-client-config.tpl"), cfg.Config, destPath)
 	if err != nil {
 		logs.Warning(err)
-		flash.Error(err.Error())
+		c.FlashError(flash, "error.file_write", "ERR_CLIENT_WRITE", err, true)
 		flash.Store(&c.Controller)
 		return
 	}
@@ -83,12 +84,13 @@ func (c *OVClientConfigController) Post() {
 	//logs.Info("Post: Updating configuration in database")
 	o := orm.NewOrm()
 	if _, err := o.Update(&cfg); err != nil {
-		flash.Error(err.Error())
+		c.FlashError(flash, "error.database_update", "ERR_CLIENT_DB", err, true)
 	} else {
-		flash.Success("Post: Config has been updated")
+		c.FlashSuccess(flash, "config.updated")
 		client := mi.NewClient(state.GlobalCfg.MINetwork, state.GlobalCfg.MIAddress)
 		if err := client.Signal("SIGTERM"); err != nil {
-			flash.Warning("Config has been updated but OpenVPN server was NOT reloaded: " + err.Error())
+			c.FlashWarning(flash, "config.updated_reload_failed")
+			flash.Set("warning_code", "ERR_OPENVPN_RELOAD")
 		}
 	}
 
@@ -96,7 +98,8 @@ func (c *OVClientConfigController) Post() {
 	clientTemplate, err := os.ReadFile(destPath)
 	if err != nil {
 		logs.Error("Error reading Client template from file:", err)
-		flash.Error("Error reading Client template from file")
+		c.FlashError(flash, "error.file_read", "ERR_CLIENT_READ", err, true)
+		flash.Store(&c.Controller)
 		return
 	}
 	c.Data["ClientTemplate"] = string(clientTemplate)
@@ -114,7 +117,7 @@ func (c *OVClientConfigController) Edit() {
 	//logs.Info("Post: Parsing form data")
 	if err := c.ParseForm(&cfg); err != nil {
 		logs.Warning(err)
-		flash.Error(err.Error())
+		c.FlashError(flash, "error.form_parse", "ERR_CLIENT_FORM", err, true)
 		flash.Store(&c.Controller)
 		return
 	}
@@ -129,17 +132,19 @@ func (c *OVClientConfigController) Edit() {
 	err := lib.ConfSaveToFile(destPath, c.GetString("ClientTemplate"))
 	if err != nil {
 		logs.Error("Error saving Client template to file:", err)
-		flash.Error("Error saving Client template to file")
+		c.FlashError(flash, "error.file_write", "ERR_CLIENT_WRITE", err, true)
+		flash.Store(&c.Controller)
 		return
 	} else {
 		//logs.Info("Edit: Client template saved to file:", destPath)
-		flash.Success("Client template has been updated")
+		c.FlashSuccess(flash, "client_config.updated")
 	}
 
 	clientTempl, err := os.ReadFile(destPath)
 	if err != nil {
 		logs.Error("Error reading Client template from file:", err)
-		flash.Error("Error reading Client template from file")
+		c.FlashError(flash, "error.file_read", "ERR_CLIENT_READ", err, true)
+		flash.Store(&c.Controller)
 		return
 	}
 	c.Data["ClientTemplate"] = string(clientTempl)

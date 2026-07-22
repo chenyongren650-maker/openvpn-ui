@@ -5,7 +5,7 @@ import (
 	"os"
 	"strings"
 
-	"github.com/beego/beego/v2/core/logs"
+	"github.com/beego/beego/v2/server/web"
 	"github.com/d3vilh/openvpn-ui/models"
 )
 
@@ -23,21 +23,25 @@ func (c *LogsController) NestPrepare() {
 func (c *LogsController) Get() {
 	c.TplName = "logs.html"
 	c.Data["breadcrumbs"] = &BreadCrumbs{
-		Title: "Logs",
+		Title: c.T("breadcrumb.logs"),
 	}
 
 	settings := models.Settings{Profile: "default"}
-	settings.Read("Profile")
+	_ = settings.Read("Profile")
+	flash := web.NewFlash()
 
 	if err := settings.Read("OVConfigPath"); err != nil {
-		logs.Error(err)
+		c.FlashError(flash, "error.database_read", "ERR_LOG_SETTINGS", err, true)
+		flash.Store(&c.Controller)
 		return
 	}
 
 	fName := settings.OVConfigPath + "/log/openvpn.log"
 	file, err := os.Open(fName)
 	if err != nil {
-		logs.Error(err)
+		c.FlashError(flash, "error.file_read", "ERR_LOG_READ", err, true)
+		flash.Store(&c.Controller)
+		return
 	}
 	defer file.Close()
 	scanner := bufio.NewScanner(file)
@@ -48,6 +52,11 @@ func (c *LogsController) Get() {
 		if !strings.Contains(line, " MANAGEMENT: ") {
 			logs = append(logs, strings.Trim(line, "\t"))
 		}
+	}
+	if err := scanner.Err(); err != nil {
+		c.FlashError(flash, "error.file_read", "ERR_LOG_SCAN", err, true)
+		flash.Store(&c.Controller)
+		return
 	}
 	start := len(logs) - 300 // :P
 	if start < 0 {

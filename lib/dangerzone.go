@@ -15,10 +15,9 @@ func DeletePKI(name string) error {
 			"cd /opt/scripts/ && "+
 				"./remove.sh %s", name))
 	cmd.Dir = state.GlobalCfg.OVConfigPath
-	output, err := cmd.CombinedOutput()
+	_, err := cmd.CombinedOutput()
 	if err != nil {
-		logs.Debug(string(output))
-		logs.Error(err)
+		logs.Error("ERR_MAINTENANCE_DELETE_COMMAND")
 		return err
 	}
 	return nil
@@ -31,10 +30,9 @@ func InitPKI(name string) error {
 			"cd /opt/scripts/ && "+
 				"./generate_ca_and_server_certs.sh %s", name))
 	cmd.Dir = state.GlobalCfg.OVConfigPath
-	output, err := cmd.CombinedOutput()
+	_, err := cmd.CombinedOutput()
 	if err != nil {
-		logs.Debug(string(output))
-		logs.Error(err)
+		logs.Error("ERR_MAINTENANCE_INIT_COMMAND")
 		return err
 	}
 	return nil
@@ -47,10 +45,9 @@ func RestartContainer(name string) error {
 			"cd /opt/scripts/ && "+
 				"./restart.sh %s", name))
 	cmd.Dir = state.GlobalCfg.OVConfigPath
-	output, err := cmd.CombinedOutput()
+	_, err := cmd.CombinedOutput()
 	if err != nil {
-		logs.Debug(string(output))
-		logs.Error(err)
+		logs.Error("ERR_CONTAINER_RESTART_COMMAND")
 		return err
 	}
 	return nil

@@ -20,7 +20,7 @@ func (c *SettingsController) NestPrepare() {
 		return
 	}
 	c.Data["breadcrumbs"] = &BreadCrumbs{
-		Title: "OpenVPN UI Settings",
+		Title: c.T("breadcrumb.ui_settings"),
 	}
 }
 
@@ -40,7 +40,7 @@ func (c *SettingsController) Post() {
 	_ = settings.Read("Profile")
 	if err := c.ParseForm(&settings); err != nil {
 		logs.Warning(err)
-		flash.Error(err.Error())
+		c.FlashError(flash, "error.form_parse", "ERR_SETTINGS_FORM", err, true)
 		flash.Store(&c.Controller)
 		return
 	}
@@ -48,9 +48,9 @@ func (c *SettingsController) Post() {
 
 	o := orm.NewOrm()
 	if _, err := o.Update(&settings); err != nil {
-		flash.Error(err.Error())
+		c.FlashError(flash, "error.database_update", "ERR_SETTINGS_DB", err, true)
 	} else {
-		flash.Success("Settings has been updated")
+		c.FlashSuccess(flash, "settings.updated")
 		state.GlobalCfg = settings
 	}
 	flash.Store(&c.Controller)

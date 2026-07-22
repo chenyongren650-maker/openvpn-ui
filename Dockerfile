@@ -56,6 +56,7 @@ RUN rm -rf /opt/openvpn-ui /opt/scripts /opt/start.sh \
 
 COPY --from=app-builder /out/openvpn-ui /opt/openvpn-ui/openvpn-ui
 COPY conf /opt/openvpn-ui/conf
+COPY locales /opt/openvpn-ui/locales
 COPY static /opt/openvpn-ui/static
 COPY swagger /opt/openvpn-ui/swagger
 COPY views /opt/openvpn-ui/views

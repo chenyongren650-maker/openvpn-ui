@@ -12,6 +12,7 @@ import (
 	"github.com/beego/beego/v2/core/validation"
 	"github.com/beego/beego/v2/server/web"
 	clientconfig "github.com/d3vilh/openvpn-server-config/client/client-config"
+	"github.com/d3vilh/openvpn-ui/i18n"
 	"github.com/d3vilh/openvpn-ui/lib"
 	"github.com/d3vilh/openvpn-ui/models"
 	"github.com/d3vilh/openvpn-ui/state"
@@ -43,7 +44,7 @@ func (c *CertificatesController) NestPrepare() {
 		return
 	}
 	c.Data["breadcrumbs"] = &BreadCrumbs{
-		Title: "Certificates",
+		Title: c.T("breadcrumb.certificates"),
 	}
 }
 
@@ -97,7 +98,7 @@ func (c *CertificatesController) DisplayImage() {
 	data, err := os.ReadFile(imagePath)
 	if err != nil {
 		c.Ctx.Output.SetStatus(404)
-		c.Ctx.WriteString("Image not found")
+		c.Ctx.WriteString(c.T("certificate.image_not_found"))
 		logs.Error("Error reading image file: %v", err)
 		return
 	}
@@ -132,20 +133,20 @@ func (c *CertificatesController) Post() {
 
 	cParams := NewCertParams{}
 	if err := c.ParseForm(&cParams); err != nil {
-		logs.Error(err)
-		flash.Error(err.Error())
+		logs.Error("ERR_CERT_FORM")
+		c.FlashError(flash, "error.form_parse", "ERR_CERT_FORM", err, false)
 		flash.Store(&c.Controller)
 	} else {
-		if vMap := validateCertParams(cParams); vMap != nil {
+		if vMap := validateCertParams(cParams, c.Localizer); vMap != nil {
 			c.Data["validation"] = vMap
 		} else {
-			logs.Info("Controller: Creating certificate with parameters: Name=%s, Staticip=%s, Passphrase=%s, ExpireDays=%s, Email=%s, Country=%s, Province=%s, City=%s, Org=%s, OrgUnit=%s, TFAName=%s, TFAIssuer=%s", cParams.Name, cParams.Staticip, cParams.Passphrase, cParams.ExpireDays, cParams.Email, cParams.Country, cParams.Province, strconv.Quote(cParams.City), strconv.Quote(cParams.Org), strconv.Quote(cParams.OrgUnit), cParams.TFAName, cParams.TFAIssuer)
+			logs.Info("Controller: Creating certificate: Name=%s, Staticip=%s, ExpireDays=%s", cParams.Name, cParams.Staticip, cParams.ExpireDays)
 			if err := lib.CreateCertificate(cParams.Name, cParams.Staticip, cParams.Passphrase, cParams.ExpireDays, cParams.Email, cParams.Country, cParams.Province, strconv.Quote(cParams.City), strconv.Quote(cParams.Org), strconv.Quote(cParams.OrgUnit), cParams.TFAName, cParams.TFAIssuer); err != nil {
-				logs.Error(err)
-				flash.Error(err.Error())
+				logs.Error("ERR_CERT_CREATE")
+				c.FlashError(flash, "certificate.create_failed", "ERR_CERT_CREATE", err, false)
 				flash.Store(&c.Controller)
 			} else {
-				flash.Success("Success! Certificate for the name \"" + cParams.Name + "\" has been created")
+				c.FlashSuccess(flash, "certificate.created", cParams.Name)
 				flash.Store(&c.Controller)
 			}
 		}
@@ -165,11 +166,11 @@ func (c *CertificatesController) Revoke() {
 	serial := c.GetString(":serial")
 	tfaname := c.GetString(":tfaname")
 	if err := lib.RevokeCertificate(name, serial, tfaname); err != nil {
-		logs.Error(err)
-		//flash.Error(err.Error())
-		//flash.Store(&c.Controller)
+		logs.Error("ERR_CERT_REVOKE")
+		c.FlashError(flash, "certificate.revoke_failed", "ERR_CERT_REVOKE", err, false)
+		flash.Store(&c.Controller)
 	} else {
-		flash.Success("Success! Certificate for the name \"" + name + "\" and serial  \"" + serial + "\" has been revoked")
+		c.FlashSuccess(flash, "certificate.revoked", name, serial)
 		flash.Store(&c.Controller)
 	}
 	c.showCerts()
@@ -191,11 +192,11 @@ func (c *CertificatesController) Burn() {
 	tfaname := c.GetString(":tfaname")
 	logs.Info("Controller: Burning certificate with parameters: CN=%s, serial=%s, tfaname=%s", CN, serial, tfaname)
 	if err := lib.BurnCertificate(CN, serial, tfaname); err != nil {
-		logs.Error(err)
-		//flash.Error(err.Error())
-		//flash.Store(&c.Controller)
+		logs.Error("ERR_CERT_REMOVE")
+		c.FlashError(flash, "certificate.remove_failed", "ERR_CERT_REMOVE", err, false)
+		flash.Store(&c.Controller)
 	} else {
-		flash.Success("Success! Certificate for the name \"" + CN + "\" and serial  \"" + serial + "\"  has been removed")
+		c.FlashSuccess(flash, "certificate.removed", CN, serial)
 		flash.Store(&c.Controller)
 	}
 	c.showCerts()
@@ -210,17 +211,17 @@ func (c *CertificatesController) Renew() {
 	serial := c.GetString(":serial")
 	tfaname := c.GetString(":tfaname")
 	if err := lib.RenewCertificate(name, localip, serial, tfaname); err != nil {
-		logs.Error(err)
-		//flash.Error(err.Error())
-		//flash.Store(&c.Controller)
+		logs.Error("ERR_CERT_RENEW")
+		c.FlashError(flash, "certificate.renew_failed", "ERR_CERT_RENEW", err, false)
+		flash.Store(&c.Controller)
 	} else {
-		flash.Success("Success! Certificate for the name \"" + name + "\"  and IP \"" + localip + "\" and Serial \"" + serial + "\" has been renewed")
+		c.FlashSuccess(flash, "certificate.renewed", name, localip, serial)
 		flash.Store(&c.Controller)
 	}
 	c.showCerts()
 }
 
-func validateCertParams(cert NewCertParams) map[string]map[string]string {
+func validateCertParams(cert NewCertParams, localizer *i18n.Localizer) map[string]map[string]string {
 	valid := validation.Validation{}
 	b, err := valid.Valid(&cert)
 	if err != nil {
@@ -228,7 +229,7 @@ func validateCertParams(cert NewCertParams) map[string]map[string]string {
 		return nil
 	}
 	if !b {
-		return lib.CreateValidationMap(valid)
+		return lib.CreateValidationMap(valid, localizer)
 	}
 	return nil
 }

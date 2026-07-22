@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 
 	"github.com/beego/beego/v2/server/web"
+	"github.com/d3vilh/openvpn-ui/i18n"
 	"github.com/d3vilh/openvpn-ui/lib"
 	"github.com/d3vilh/openvpn-ui/models"
 	"github.com/d3vilh/openvpn-ui/routers"
@@ -21,6 +22,10 @@ func main() {
 
 	if err := web.LoadAppConfig("ini", configFile); err != nil {
 		panic(err)
+	}
+	localesDir := filepath.Clean(filepath.Join(*configDir, "..", "locales"))
+	if err := i18n.Load(localesDir); err != nil {
+		panic(fmt.Errorf("load language resources: %w", err))
 	}
 
 	models.InitDB()

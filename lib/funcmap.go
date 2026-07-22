@@ -4,13 +4,22 @@ import (
 	"bytes"
 	"fmt"
 	"strconv"
+	"time"
 
 	"github.com/beego/beego/v2/core/logs"
 	"github.com/beego/beego/v2/server/web"
+	"github.com/d3vilh/openvpn-ui/i18n"
 )
 
 // AddFuncMaps .
 func AddFuncMaps() {
+	_ = web.AddFuncMap("t", func(localizer *i18n.Localizer, key string, args ...interface{}) string {
+		if localizer == nil {
+			return key
+		}
+		return localizer.T(key, args...)
+	})
+	_ = web.AddFuncMap("formatunixtime", formatUnixTime)
 	_ = web.AddFuncMap("field_error_message", func(v map[string]map[string]string, key string) map[string]string {
 		if val, ok := v[key]; ok {
 			return val
@@ -83,6 +92,14 @@ func AddFuncMaps() {
 		}
 		return "Mapping error"
 	})
+}
+
+func formatUnixTime(timestamp, fallback string) string {
+	seconds, err := strconv.ParseInt(timestamp, 10, 64)
+	if err != nil {
+		return fallback
+	}
+	return time.Unix(seconds, 0).Local().Format("2006-01-02 15:04:05")
 }
 
 func num2str(n int64, sep rune) string {

@@ -1,13 +1,13 @@
 {{ template "layout/base.html" . }}
 
 {{define "head"}}
-<title>Client Settings</title>
+<title>{{t .Localizer "client.title"}}</title>
 {{end}}
 
 {{define "body"}}
 <div class="card card-primary">
   <div class="card-header with-border">
-    <h3 class="card-title">Client configuration template for .opvn file</h3>
+    <h3 class="card-title">{{t .Localizer "client.heading"}}</h3>
     <div class="pull-right card-tools">
       <button type="button" class="btn btn-tool" data-card-widget="collapse">
       <i class="fa fa-minus"></i></button>
@@ -17,7 +17,7 @@
   <!-- form start -->
   {{template "common/alert.html" .}}
   <div class="card-body">
-    <p>Additional explanations for all the options listed below can be found on the officiall <a href="https://community.openvpn.net/openvpn/wiki/Openvpn24ManPage" target="_blank">WIKI page</a> or in the official <a href="https://community.openvpn.net/openvpn/wiki/HOWTO" target="_blank">Howto</a> guide</p>
+    <p>{{t .Localizer "client.docs_prefix"}} <a href="https://community.openvpn.net/openvpn/wiki/Openvpn24ManPage" target="_blank">WIKI</a> {{t .Localizer "common.or"}} <a href="https://community.openvpn.net/openvpn/wiki/HOWTO" target="_blank">HOWTO</a>。</p>
   <form role="form" action="{{urlfor "OVClientConfigController.Post"}}" method="post">
     <div class="card-body">
       <!-- Disabled Profile - yet another feature to implement.
@@ -27,140 +27,140 @@
      </div> -->
 
       <div class="form-group">
-        <label for="name">Connection Address</label>
-        <input type="text" class="form-control" id="ServerAddress" name="ServerAddress" placeholder="Enter server address"
+        <label for="ServerAddress">{{t .Localizer "client.connection_address"}}</label>
+        <input type="text" class="form-control" id="ServerAddress" name="ServerAddress" placeholder="vpn.example.com"
           value="{{ .Settings.ServerAddress }}">
-          <span id="helpBlock" class="text-muted">Server IP address or DNS hostname which will be used by Client to connect. If you use IP NAT you can set external Internet IP of your server here</span>
+          <span class="text-muted">{{t .Localizer "client.connection_address_help"}}</span>
       </div>
 
       <div class="form-group">
-        <label for="name">Connection Port</label>
-        <input type="text" class="form-control" id="OpenVpnServerPort" name="OpenVpnServerPort" placeholder="Enter external server port"
+        <label for="OpenVpnServerPort">{{t .Localizer "client.connection_port"}}</label>
+        <input type="text" class="form-control" id="OpenVpnServerPort" name="OpenVpnServerPort" placeholder="1195"
           value="{{ .Settings.OpenVpnServerPort }}">
-          <span id="helpBlock" class="text-muted">Server Port which will be used by Client to connect. If you use PORT NAT you can set external Internet Port of your server here</span>
+          <span class="text-muted">{{t .Localizer "client.connection_port_help"}}</span>
       </div>
 
       <div class="form-group">
-        <label for="name">Proto</label> <span id="helpBlock" class="text-muted">Don't forget to change server configuration side.</span>
-        <input type="text" class="form-control" id="Proto" name="Proto" placeholder="Enter external server protocol"
+        <label for="Proto">Proto</label> <span class="text-muted">{{t .Localizer "client.server_side_help"}}</span>
+        <input type="text" class="form-control" id="Proto" name="Proto" placeholder="udp"
           value="{{ .Settings.Proto }}">
       </div>
 
       <div class="form-group" id="auth-mode">
-        <label>Authentication Mode</label>
+        <label>{{t .Localizer "client.auth_mode"}}</label>
         <select name="FuncMode" id="FuncMode" class="form-control">
-          <option value="0" {{if eq .Settings.FuncMode 0}}selected{{end}}>Classic Authentication (Certificate and optional password)</option>
-          <option value="1" {{if eq .Settings.FuncMode 1}}selected{{end}}>Two Factor Authentication (2FA)</option>
+          <option value="0" {{if eq .Settings.FuncMode 0}}selected{{end}}>{{t .Localizer "client.auth_classic"}}</option>
+          <option value="1" {{if eq .Settings.FuncMode 1}}selected{{end}}>{{t .Localizer "client.auth_2fa"}}</option>
         </select>
       </div>
-  
+
       <div class="form-group" id="tfa-issuer">
-        <label for="name">2FA Issuer String</label> 
-        <input type="text" class="form-control" id="tfaissuer" name="TFAIssuer" placeholder="MFA%20OpenVPN-UI"
+        <label for="tfaissuer">2FA Issuer</label>
+        <input type="text" class="form-control" id="tfaissuer" name="TFAIssuer" placeholder="ZHISUAN"
           value="{{if eq .Settings.FuncMode 0}}{{else}}{{ .Settings.TFAIssuer }}{{ end }}">
-          <span id="helpBlock" class="text-muted">2FA Issuer string for Clients QR Code</span>
+          <span class="text-muted">{{t .Localizer "client.issuer_help"}}</span>
       </div>
 
       <div class="form-group" id="a-user-pass">
-        <label for="name">AuthUserPass</label> 
+        <label for="authuserpass">AuthUserPass</label>
         <input type="text" class="form-control" id="authuserpass" name="AuthUserPass" placeholder="AuthUserPass"
           value="{{if eq .Settings.FuncMode 0}} {{else}}auth-user-pass{{ end }}">
-          <span id="helpBlock" class="text-muted">Used to set specific User Authentication process (2FA, Radius, etc)</span>
+          <span class="text-muted">{{t .Localizer "client.auth_user_pass_help"}}</span>
       </div>
 
       <div class="form-group">
-        <label for="name">Redirect Gateway</label> <!-- strong><span style="color:#337ab7" title="&quot;redirect-gateway def1&quot;">!</span></strong --><span id="helpBlock" class="text-muted" style="font-size: 80%;"> Comment out this line if you don't need it: "#redirect-gateway def1"</span>
+        <label for="RedirectGateway">Redirect Gateway</label> <span class="text-muted" style="font-size: 80%;">{{t .Localizer "client.comment_out_help" "#redirect-gateway def1"}}</span>
         <input type="text" class="form-control" id="RedirectGateway" name="RedirectGateway" placeholder="redirect-gateway def1"
           value="{{ .Settings.RedirectGateway }}">
-          <span id="helpBlock" class="text-muted">Used to redirect all Client traffic via OpenVPN Server.</span>
+          <span class="text-muted">{{t .Localizer "client.redirect_help"}}</span>
       </div>
 
       <div class="form-group">
-        <label for="name">Resolv-retry</label> <!--strong><span style="color:#337ab7" title="&quot;resolv-retry infinite&quot;">!</span></strong--><span id="helpBlock" class="text-muted" style="font-size: 80%;"> Comment out this line if you don't need it: "#resolv-retry infinite"</span>
+        <label for="ResolveRetry">Resolv-retry</label> <span class="text-muted" style="font-size: 80%;">{{t .Localizer "client.comment_out_help" "#resolv-retry infinite"}}</span>
         <input type="text" class="form-control" id="ResolveRetry" name="ResolveRetry" placeholder="resolv-retry infinite"
-          value="{{ .Settings.ResolveRetry }}"> 
+          value="{{ .Settings.ResolveRetry }}">
       </div>
 
       <div class="form-group">
-        <label for="name">User</label> <span id="helpBlock" class="text-muted">(Non Windows Only)</span> <!--span style="color:#337ab7" title="&quot;nobody&quot;"><strong>!</strong></span -->
+        <label for="OVClientUser">User</label> <span class="text-muted">{{t .Localizer "client.non_windows_only"}}</span>
         <input type="text" class="form-control" id="OVClientUser" name="OVClientUser" placeholder="nobody"
           value="{{ .Settings.OVClientUser }}">
       </div>
 
       <div class="form-group">
-        <label for="name">Group</label> <span id="helpBlock" class="text-muted">(Non Windows Only)</span> <!--span style="color:#337ab7" title="&quot;nobody&quot;"><strong>!</strong></span -->
+        <label for="OVClientGroup">Group</label> <span class="text-muted">{{t .Localizer "client.non_windows_only"}}</span>
         <input type="text" class="form-control" id="OVClientGroup" name="OVClientGroup" placeholder="nogroup"
           value="{{ .Settings.OVClientGroup }}">
       </div>
 
       <div class="form-group">
-        <label for="name">Persist-tun</label> <!--strong><span style="color:#337ab7" title="&quot;persist-tun&quot;">!</span></strong--><span id="helpBlock" class="text-muted" style="font-size: 80%;"> Comment out this line if you don't need it: "#persist-tun"</span>
+        <label for="PersistTun">Persist-tun</label> <span class="text-muted" style="font-size: 80%;">{{t .Localizer "client.comment_out_help" "#persist-tun"}}</span>
         <input type="text" class="form-control" id="PersistTun" name="PersistTun" placeholder="persist-tun"
           value="{{ .Settings.PersistTun }}">
       </div>
 
       <div class="form-group">
-        <label for="name">Persist-key</label> <!--strong><span style="color:#337ab7" title="&quot;persist-key&quot;">!</span></strong --><span id="helpBlock" class="text-muted" style="font-size: 80%;"> Comment out this line if you don't need it: "#persist-key"</span>
+        <label for="PersistKey">Persist-key</label> <span class="text-muted" style="font-size: 80%;">{{t .Localizer "client.comment_out_help" "#persist-key"}}</span>
         <input type="text" class="form-control" id="PersistKey" name="PersistKey" placeholder="persist-key"
           value="{{ .Settings.PersistKey }}">
       </div>
 
       <div class="form-group">
-        <label for="name">Remote-cert-tls</label> <!--strong><span style="color:#337ab7" title="&quot;remote-cert-tls server&quot;">!</span></strong --><span id="helpBlock" class="text-muted" style="font-size: 80%;"> Comment out this line if you don't need it: "#remote-cert-tls server"</span>
+        <label for="RemoteCertTLS">Remote-cert-tls</label> <span class="text-muted" style="font-size: 80%;">{{t .Localizer "client.comment_out_help" "#remote-cert-tls server"}}</span>
         <input type="text" class="form-control" id="RemoteCertTLS" name="RemoteCertTLS" placeholder="remote-cert-tls server"
           value="{{ .Settings.RemoteCertTLS }}">
       </div>
 
       <div class="form-group">
-        <label for="name">Cipher</label> <span id="helpBlock" class="text-muted">Don't forget to change server configuration side.</span>
+        <label for="Cipher">Cipher</label> <span class="text-muted">{{t .Localizer "client.server_side_help"}}</span>
         <input type="text" class="form-control" id="Cipher" name="Cipher" placeholder="AES-256-CBC"
           value="{{ .Settings.Cipher }}">
       </div>
 
       <div class="form-group">
-        <label for="name">Auth</label> <span id="helpBlock" class="text-muted">Don't forget to change server configuration side.</span>
+        <label for="Auth">Auth</label> <span class="text-muted">{{t .Localizer "client.server_side_help"}}</span>
         <input type="text" class="form-control" id="Auth" name="Auth" placeholder="SHA512"
           value="{{ .Settings.Auth }}">
       </div>
 
       <div class="form-group">
-        <label for="name">Auth-nocache</label> <!--strong><span style="color:#337ab7" title="&quot;auth-nocache&quot;">!</span></strong --><span id="helpBlock" class="text-muted" style="font-size: 80%;"> Comment out this line if you don't need it: "#auth-nocache"</span>
+        <label for="AuthNoCache">Auth-nocache</label> <span class="text-muted" style="font-size: 80%;">{{t .Localizer "client.comment_out_help" "#auth-nocache"}}</span>
         <input type="text" class="form-control" id="AuthNoCache" name="AuthNoCache" placeholder="auth-nocache"
           value="{{ .Settings.AuthNoCache }}">
       </div>
 
       <div class="form-group">
-        <label for="name">Tls-client</label> <!--strong><span style="color:#337ab7" title="&quot;tls-client&quot;">!</span></strong --><span id="helpBlock" class="text-muted" style="font-size: 80%;"> Comment out this line if you don't need it: "#tls-client"</span>
+        <label for="TlsClient">Tls-client</label> <span class="text-muted" style="font-size: 80%;">{{t .Localizer "client.comment_out_help" "#tls-client"}}</span>
         <input type="text" class="form-control" id="TlsClient" name="TlsClient" placeholder="tls-client"
           value="{{ .Settings.TlsClient }}">
       </div>
 
       <div class="form-group">
-        <label for="name">Client logs verbose level</label> <!--strong><span style="color:#337ab7" title="&quot;3&quot;">!</span></strong -->
+        <label for="Verbose">{{t .Localizer "client.verbose"}}</label>
         <input type="text" class="form-control" id="Verbose" name="Verbose" placeholder="3"
           value="{{ .Settings.Verbose }}">
-          <span id="helpBlock" class="text-muted">From 0 to 4, where 0 is no logs, 4 - maximum verbose level.</span>
+          <span class="text-muted">{{t .Localizer "client.verbose_help"}}</span>
       </div>
 
       <div class="form-group">
-        <label for="name">Custom Client Template Option One</label> 
+        <label for="CustomConfOne">{{t .Localizer "client.custom_option_one"}}</label>
         <input type="text" class="form-control" id="CustomConfOne" name="CustomConfOne" placeholder="#Custom Option One"
           value="{{ .Settings.CustomConfOne }}">
-          <span id="helpBlock" class="text-muted">Custom Option for Client template. Literally anything. Full format option (to disable - comment with #)</span>
+          <span class="text-muted">{{t .Localizer "client.custom_option_help"}}</span>
       </div>
 
       <div class="form-group">
-        <label for="name">Custom Client Template Option Two</label> 
+        <label for="CustomConfTwo">{{t .Localizer "client.custom_option_two"}}</label>
         <input type="text" class="form-control" id="CustomConfTwo" name="CustomConfTwo" placeholder="#Custom Option Two"
           value="{{ .Settings.CustomConfTwo }}">
-          <span id="helpBlock" class="text-muted">Custom Option for Client template. Literally anything. Full format option (to disable - comment with #)</span>
+          <span class="text-muted">{{t .Localizer "client.custom_option_help"}}</span>
       </div>
 
       <div class="form-group">
-        <label for="name">Custom Client Template Option Three</label> 
-        <textarea class="form-control" name="CustomConfThree" id="CustomConfThree" placeholder="#Custom Option Three" 
+        <label for="CustomConfThree">{{t .Localizer "client.custom_option_three"}}</label>
+        <textarea class="form-control" name="CustomConfThree" id="CustomConfThree" placeholder="#Custom Option Three"
          rows="2">{{ .Settings.CustomConfThree }}</textarea>
-          <span id="helpBlock" class="text-muted">Custom Option for Client template. Literally anything. Full format option (to disable - comment with #)</span>
+          <span class="text-muted">{{t .Localizer "client.custom_option_help"}}</span>
       </div>
 
      <!--  comented out to avoid client/server confusion
@@ -179,8 +179,8 @@
      -->
       {{ .xsrfdata }}
 
-      <button type="submit" style="width: 125px;" class="btn btn-primary" onclick="return confirm('Are you sure you want to Save new configuration file?\nCurrent configuration will be overwritten!');">Save Config</button> &nbsp; &nbsp;
-      <button type="button" style="width: 125px;" class="btn btn-primary" data-toggle="modal" data-target="#config-view-modal">View config</button>
+      <button type="submit" style="width: 125px;" class="btn btn-primary" onclick="return confirm('{{t .Localizer "common.confirm_overwrite"}}');">{{t .Localizer "common.save_config"}}</button> &nbsp; &nbsp;
+      <button type="button" style="width: 125px;" class="btn btn-primary" data-toggle="modal" data-target="#config-view-modal">{{t .Localizer "common.view_config"}}</button>
     </div>
         <!-- /.card-body -->
   </form>
@@ -192,7 +192,7 @@
     <div class="modal-content">
       <div class="modal-header">
         <h4 class="modal-title">{{ .BeeSettings.OVConfigPath }}/config/client.conf</h4>
-        <button type="button" class="close" data-dismiss="modal" aria-label="Close">
+        <button type="button" class="close" data-dismiss="modal" aria-label="{{t .Localizer "common.close"}}">
           <span aria-hidden="true">&times;</span></button>
       </div>
       <div class="modal-body">
@@ -201,7 +201,7 @@
            {{template "common/alert.html" .}}
             <form role="server-config" role="form" action="{{urlfor "OVClientConfigController.Edit"}}" method="post">
               <div class="card-body">
-              
+
                 <div class="form-group">
                     <!--div class="card-group" id="accordion">
                       <span >
@@ -218,10 +218,10 @@
                     </div-->
                     <br><textarea type="text" class="form-control my-textarea" name="ClientTemplate" id="ClientTemplate" spellcheck="false" rows="15">{{ .ClientTemplate }}</textarea>
                 </div>
-                
+
                 {{ .xsrfdata }}
 
-                <button type="button" class="btn btn-default pull-left" style="width: 135px;" data-dismiss="modal">Close</button> &nbsp; &nbsp;
+                <button type="button" class="btn btn-default pull-left" style="width: 135px;" data-dismiss="modal">{{t .Localizer "common.close"}}</button> &nbsp; &nbsp;
                 <!--button type="submit" class="btn btn-primary" style="width: 135px;" onclick="return confirm('Are you sure you want to Save updated configuration file?\nTemplate will not be updated!'); window.location.reload();">Save</button-->
               </div>
                  <!-- /.card-body -->
@@ -240,8 +240,8 @@
   <form role="form" action="{{urlfor "OVClientConfigController.Post"}}" method="post">
     {{ .xsrfdata }}
     <div class="card-boddy">
-      <a href="javascript:$.MyAPP.Restart('SIGUSR1')" class="btn btn-warning btn-primary" style="width: 135px;" title="Conditional Restart (SIGUSR1)">Restart Server</a>
-      <span style="color:grey;"> &nbsp; OpenVPN Server Conditional Restart will apply new configuration and re-initiate all active clients sessions.</span> 
+      <a href="javascript:$.MyAPP.Restart('SIGUSR1')" class="btn btn-warning btn-primary" style="width: 135px;" title="{{t .Localizer "maintenance.conditional_restart"}} (SIGUSR1)">{{t .Localizer "maintenance.restart_server"}}</a>
+      <span style="color:grey;"> &nbsp; {{t .Localizer "maintenance.restart_help"}}</span>
     </div>
       <!-- /.card-body -->
   </form>
@@ -267,7 +267,6 @@
       authUserPass.style.display = 'block';
       tFAIssuer.style.display = 'block';
       authUserPassInput.value = 'auth-user-pass';
-      //tFAIssuerInput.value = 'MFA%20OpenVPN-UI';
     }
   }
   funcModeSelect.addEventListener('change', checkFuncMode);

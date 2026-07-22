@@ -13,6 +13,7 @@ type JSONResponse struct {
 	Status  string      `json:"status"`
 	Message string      `json:"message"`
 	Code    string      `json:"code,omitempty"`
+	Detail  string      `json:"detail,omitempty"`
 	Data    interface{} `json:"data,omitempty"`
 }
 
@@ -30,7 +31,7 @@ func (c *APIBaseController) Prepare() {
 
 func (c *APIBaseController) NestPrepare() {
 	if !c.IsLogin {
-		c.ServeJSONError("You are not authorized")
+		c.ServeJSONError("api.error.unauthorized", "ERR_UNAUTHORIZED", nil, false)
 		return
 	}
 }
@@ -49,12 +50,22 @@ func (c *APIBaseController) ServeJSONData(data interface{}) {
 	c.ServeJSON()
 }
 
-func (c *APIBaseController) ServeJSONError(message string) {
+func (c *APIBaseController) ServeJSONError(messageKey, code string, err error, exposeDetail bool) {
+	detail := ""
+	if exposeDetail && err != nil {
+		detail = sanitizeTechnicalDetail(err.Error())
+	}
 	c.Data["json"] = JSONResponse{
 		Status:  "error",
-		Message: message,
+		Message: c.T(messageKey),
+		Code:    code,
+		Detail:  detail,
 	}
-	logs.Warning(message)
+	if err != nil && exposeDetail {
+		logs.Warning("%s: %s", code, sanitizeTechnicalDetail(err.Error()))
+	} else {
+		logs.Warning("%s", code)
+	}
 	c.Ctx.Output.SetStatus(400)
 	c.ServeJSON()
 }

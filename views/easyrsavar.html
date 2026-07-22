@@ -1,13 +1,13 @@
 {{ template "layout/base.html" . }}
 
 {{define "head"}}
-<title>EasyRSA Variables</title>
+<title>{{t .Localizer "easyrsa.title"}}</title>
 {{end}}
 
 {{define "body"}}
 <div class="card card-default">
   <div class="card-header with-border">
-    <h3 class="card-title">Vars Configuration</h3>
+    <h3 class="card-title">{{t .Localizer "easyrsa.configuration"}}</h3>
     <div class="pull-right card-tools">
       <button type="button" class="btn btn-tool" data-card-widget="collapse">
         <i class="fa fa-minus"></i></button>
@@ -15,15 +15,15 @@
   </div>
   <div class="card-body">
     <a data-toggle="collapse" data-parent="#accordion" href="#collapseOne" aria-expanded="false" class="collapsed">
-      <i class="fa fa-fw fa-info-circle" style="font-size: 15px;"></i> Please note
+      <i class="fa fa-fw fa-info-circle" style="font-size: 15px;"></i> {{t .Localizer "common.please_note"}}
     </a>
     <div class="card-group" id="accordion">
     </div>
     <div id="collapseOne" class="panel-collapse collapse" aria-expanded="false" style="height: 0px;">
-      <span class="text-muted">If you've already completed the automatic setup without modifying the EasyRSA vars and now wish to make changes, follow these steps:</span><br>
-      <span class="text-muted"><b style="visibility: hidden;">Note</b>1. Save the new EasyRSA vars on this page.</span><br>
-      <span class="text-muted"><b style="visibility: hidden;">Note</b>2. Navigate to &quot;Configuration > Maintenance&quot;.</span><br>
-      <span class="text-muted"><b style="visibility: hidden;">Note</b>3. Click the &quot;DELETE ALL&quot; button, followed by the &quot;INITIALIZE ALL&quot; button.</span>
+      <span class="text-muted">{{t .Localizer "easyrsa.change_warning"}}</span><br>
+      <span class="text-muted">1. {{t .Localizer "easyrsa.change_step_save"}}</span><br>
+      <span class="text-muted">2. {{t .Localizer "easyrsa.change_step_maintenance"}}</span><br>
+      <span class="text-muted">3. {{t .Localizer "easyrsa.change_step_reinitialize"}}</span>
     </div>
 
       <!-- /.card-header -->
@@ -31,7 +31,7 @@
       {{template "common/alert.html" .}}
       <form role="form" action="{{urlfor "EasyRSAConfigController.Post"}}" method="post">
 
-        <span>EasyRSA vars reference with description for every parameter can be found<a href="https://github.com/OpenVPN/easy-rsa/blob/master/doc/EasyRSA-Advanced.md#environmental-variables-reference" target="_blank"> here</a>.</span><br><br>
+        <span>{{t .Localizer "easyrsa.reference_prefix"}} <a href="https://github.com/OpenVPN/easy-rsa/blob/master/doc/EasyRSA-Advanced.md#environmental-variables-reference" target="_blank">{{t .Localizer "common.here"}}</a>.</span><br><br>
           <!-- Disabled Profile - yet another feature to implement.
           <div class="form-group">
             <label for="name">Profile</label>
@@ -41,98 +41,98 @@
         <label for="name">EASYRSA_DN</label>
         <input type="text" class="form-control" id="EasyRSADN" name="EasyRSADN" placeholder="org"
           value="{{ .Settings.EasyRSADN }}">
-          <span id="helpBlock" class="text-muted">&quot;org&quot; - full DN format: &quot;Country/Province/City/Org/Org.Unit/email/commonName&quot;. &quot;cn_only&quot; - Use just a commonName value.</span>
+          <span id="helpBlock" class="text-muted">{{t .Localizer "easyrsa.dn_help"}}</span>
       </div>
 
       <div class="form-group">
         <label for="name">EASYRSA_REQ_COUNTRY</label>
-        <input type="text" class="form-control" id="EasyRSAReqCountry" name="EasyRSAReqCountry" placeholder="UA"
+        <input type="text" class="form-control" id="EasyRSAReqCountry" name="EasyRSAReqCountry" placeholder="CN"
           value="{{ .Settings.EasyRSAReqCountry }}">
-          <span id="helpBlock" class="text-muted">The two-letter DN Organisational field for country code (e.g. UA).</span>
+          <span id="helpBlock" class="text-muted">{{t .Localizer "easyrsa.country_help"}}</span>
       </div>
 
       <div class="form-group">
         <label for="name">EASYRSA_REQ_PROVINCE</label>
-        <input type="text" class="form-control" id="EasyRSAReqProvince" name="EasyRSAReqProvince" placeholder="KY"
+        <input type="text" class="form-control" id="EasyRSAReqProvince" name="EasyRSAReqProvince" placeholder="GD"
           value="{{ .Settings.EasyRSAReqProvince }}">
-        <span id="helpBlock" class="text-muted">The two-letter DN Organisational field for province code (e.g. KY for &quot;Kyiv region&quot;).</span>
+        <span id="helpBlock" class="text-muted">{{t .Localizer "easyrsa.province_help"}}</span>
       </div>
 
       <div class="form-group">
         <label for="name">EASYRSA_REQ_CITY</label>
-        <input type="text" class="form-control" id="EasyRSAReqCity" name="EasyRSAReqCity" placeholder="Kyiv"
+        <input type="text" class="form-control" id="EasyRSAReqCity" name="EasyRSAReqCity" placeholder="Guangzhou"
           value="{{ .Settings.EasyRSAReqCity }}">
-        <span id="helpBlock" class="text-muted">The city of DN Organisation.</span>
+        <span id="helpBlock" class="text-muted">{{t .Localizer "easyrsa.city_help"}}</span>
 
       </div>
 
       <div class="form-group">
         <label for="name">EASYRSA_REQ_ORG</label>
-        <input type="text" class="form-control" id="EasyRSAReqOrg" name="EasyRSAReqOrg" placeholder="SweetHome"
+        <input type="text" class="form-control" id="EasyRSAReqOrg" name="EasyRSAReqOrg" placeholder="ZHISUAN"
           value="{{ .Settings.EasyRSAReqOrg }}">
-        <span id="helpBlock" class="text-muted">The name of DN Organisation.</span>
+        <span id="helpBlock" class="text-muted">{{t .Localizer "easyrsa.organization_help"}}</span>
       </div>
 
       <div class="form-group">
         <label for="name">EASYRSA_REQ_EMAIL</label>
-        <input type="text" class="form-control" id="EasyRSAReqEmail" name="EasyRSAReqEmail" placeholder="sweet@home.ua"
+        <input type="text" class="form-control" id="EasyRSAReqEmail" name="EasyRSAReqEmail" placeholder="vpn-admin@example.invalid"
           value="{{ .Settings.EasyRSAReqEmail }}">
-        <span id="helpBlock" class="text-muted">The e-mail address of DN Organisation.</span>
+        <span id="helpBlock" class="text-muted">{{t .Localizer "easyrsa.email_help"}}</span>
       </div>
 
       <div class="form-group">
         <label for="name">EASYRSA_REQ_OU</label>
-        <input type="text" class="form-control" id="EasyRSAReqOu" name="EasyRSAReqOu" placeholder="GarageVPN"
+        <input type="text" class="form-control" id="EasyRSAReqOu" name="EasyRSAReqOu" placeholder="IT Service"
           value="{{ .Settings.EasyRSAReqOu }}">
-        <span id="helpBlock" class="text-muted">The Organisational Unit of DN Organisation.</span>
+        <span id="helpBlock" class="text-muted">{{t .Localizer "easyrsa.unit_help"}}</span>
       </div>
 
       <div class="form-group">
         <label for="name">EASYRSA_REQ_CN</label>
         <input type="text" class="form-control" id="EasyRSAReqCn" name="EasyRSAReqCn" placeholder="OVPNserver"
           value="{{ .Settings.EasyRSAReqCn }}">
-        <span id="helpBlock" class="text-muted">The Common Name of DN Organisation.</span>
+        <span id="helpBlock" class="text-muted">{{t .Localizer "easyrsa.common_name_help"}}</span>
       </div>
 
       <div class="form-group">
         <label for="name">EASYRSA_KEY_SIZE</label>
         <input type="text" class="form-control" id="EasyRSAKeySize" name="EasyRSAKeySize" placeholder="2048"
           value="{{ .Settings.EasyRSAKeySize }}">
-        <span id="helpBlock" class="text-muted">Size in bits for your keypairs. The recommended value is 2048, leave it as-is. However can be set up to 4096.</span>
+        <span id="helpBlock" class="text-muted">{{t .Localizer "easyrsa.key_size_help"}}</span>
       </div>
 
       <div class="form-group">
         <label for="name">EASYRSA_CA_EXPIRE</label>
         <input type="text" class="form-control" id="EasyRSACaExpire" name="EasyRSACaExpire" placeholder="3650"
           value="{{ .Settings.EasyRSACaExpire }}">
-        <span id="helpBlock" class="text-muted">Number of days until the root CA key expires. The recommended value is 3650.</span>
+        <span id="helpBlock" class="text-muted">{{t .Localizer "easyrsa.ca_expire_help"}}</span>
       </div>
 
       <div class="form-group">
         <label for="name">EASYRSA_CERT_EXPIRE</label>
         <input type="text" class="form-control" id="EasyRSACertExpire" name="EasyRSACertExpire" placeholder="825"
           value="{{ .Settings.EasyRSACertExpire }}">
-        <span id="helpBlock" class="text-muted">Number of days until Client certificate expire. The recommended value is 825.</span>
+        <span id="helpBlock" class="text-muted">{{t .Localizer "easyrsa.cert_expire_help"}}</span>
       </div>
 
       <div class="form-group">
         <label for="name">EASYRSA_CRL_DAYS</label>
         <input type="text" class="form-control" id="EasyRSACrlDays" name="EasyRSACrlDays" placeholder="180"
           value="{{ .Settings.EasyRSACrlDays }}">
-        <span id="helpBlock" class="text-muted">Number of days until the CRL expires. The recommended value is 180. To apply new value - press &quot;Generate CRL&quot; under the &quot;Maintenance&quot;.</span>
+        <span id="helpBlock" class="text-muted">{{t .Localizer "easyrsa.crl_days_help"}}</span>
       </div>
 
       <div class="form-group">
         <label for="name">EASYRSA_CERT_RENEW</label>
         <input type="text" class="form-control" id="EasyRSACertRenew" name="EasyRSACertRenew" placeholder="30"
           value="{{ .Settings.EasyRSACertRenew }}">
-        <span id="helpBlock" class="text-muted">This should be implemented on OpenVPN Server side. Number of days before expiration to automatically renew certificates.</span>
+        <span id="helpBlock" class="text-muted">{{t .Localizer "easyrsa.renew_help"}}</span>
       </div>
 
       {{ .xsrfdata }}
 
-      <button type="submit" style="width: 145px;" class="btn btn-primary">Save Vars</button> &nbsp; &nbsp;
-      <button type="button" style="width: 145px;" class="btn btn-primary" data-toggle="modal" data-target="#easyrsa-view-modal">View Vars</button>
+      <button type="submit" style="width: 145px;" class="btn btn-primary">{{t .Localizer "easyrsa.save_vars"}}</button> &nbsp; &nbsp;
+      <button type="button" style="width: 145px;" class="btn btn-primary" data-toggle="modal" data-target="#easyrsa-view-modal">{{t .Localizer "easyrsa.view_vars"}}</button>
     </div>
         <!-- /.card-body -->
   </form>
@@ -143,8 +143,8 @@
   <div class="modal-dialog modal-lg" role="document">
     <div class="modal-content">
       <div class="modal-header">
-        <h4 class="modal-title">Config viewer</h4>
-        <button type="button" class="close" data-dismiss="modal" aria-label="Close">
+        <h4 class="modal-title">{{t .Localizer "common.config_viewer"}}</h4>
+        <button type="button" class="close" data-dismiss="modal" aria-label="{{t .Localizer "common.close"}}">
           <span aria-hidden="true">&times;</span></button>
       </div>
       <div class="modal-body">
@@ -158,13 +158,13 @@
                   <label for="name">.easy-rsa/pki/vars</label>
                   <textarea type="text" class="form-control my-textarea" name="ServerConfig" 
                    id="ServerConfig"  spellcheck="false" rows="15">{{ .EasyRSAConf }}</textarea>
-                  <span id="helpBlock" class="text-muted">This is EasyRSA VARS file.
+                  <span id="helpBlock" class="text-muted">{{t .Localizer "easyrsa.vars_file_help"}}
                   </span>
                 </div>
                 
                 {{ .xsrfdata }}
 
-                <button type="button" class="btn btn-default pull-left" style="width: 145px;" data-dismiss="modal">Close</button>
+                <button type="button" class="btn btn-default pull-left" style="width: 145px;" data-dismiss="modal">{{t .Localizer "common.close"}}</button>
               </div>
                  <!-- /.card-body -->
             </form>

@@ -28,13 +28,13 @@ func (c *APISignalController) Send() {
 	client := mi.NewClient(state.GlobalCfg.MINetwork, state.GlobalCfg.MIAddress)
 	p := SignalParams{}
 	if err := json.Unmarshal(c.Ctx.Input.RequestBody, &p); err != nil {
-		c.ServeJSONError(err.Error())
+		c.ServeJSONError("api.error.invalid_request", "ERR_INVALID_REQUEST", err, true)
 		return
 	}
 	if err := client.Signal(p.Sname); err != nil {
-		c.ServeJSONError(err.Error())
+		c.ServeJSONError("api.error.signal", "ERR_SIGNAL", err, false)
 		return
 	}
 
-	c.ServeJSONMessage("Signal sent")
+	c.ServeJSONMessage(c.T("api.signal.sent"))
 }

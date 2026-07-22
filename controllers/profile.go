@@ -9,6 +9,7 @@ import (
 	"github.com/beego/beego/v2/core/logs"
 	"github.com/beego/beego/v2/core/validation"
 	"github.com/beego/beego/v2/server/web"
+	"github.com/d3vilh/openvpn-ui/i18n"
 	"github.com/d3vilh/openvpn-ui/lib"
 	"github.com/d3vilh/openvpn-ui/models"
 )
@@ -32,7 +33,7 @@ func (c *ProfileController) NestPrepare() {
 		return
 	}
 	c.Data["breadcrumbs"] = &BreadCrumbs{
-		Title: "Profile configuration",
+		Title: c.T("breadcrumb.profile"),
 	}
 }
 
@@ -62,15 +63,15 @@ func (c *ProfileController) Post() {
 
 	user := models.User{}
 	if err := c.ParseForm(&user); err != nil {
-		logs.Error(err)
-		flash.Error(err.Error())
+		logs.Error("ERR_PROFILE_FORM")
+		c.FlashError(flash, "error.form_parse", "ERR_PROFILE_FORM", err, false)
 		flash.Store(&c.Controller)
 		return
 	}
 	user.Login = c.Userinfo.Login
 	c.Data["profile"] = user
 
-	if vMap := validateUser(user); vMap != nil {
+	if vMap := validateUser(user, c.Localizer); vMap != nil {
 		c.Data["validation"] = vMap
 		c.List()
 		return
@@ -78,7 +79,7 @@ func (c *ProfileController) Post() {
 
 	hash, err := passlib.Hash(user.Password)
 	if err != nil {
-		flash.Error("Unable to hash password")
+		c.FlashError(flash, "profile.password_hash_failed", "ERR_PASSWORD_HASH", err, false)
 		flash.Store(&c.Controller)
 		return
 	}
@@ -87,15 +88,15 @@ func (c *ProfileController) Post() {
 	c.Userinfo.Password = hash
 	o := orm.NewOrm()
 	if _, err := o.Update(c.Userinfo); err != nil {
-		flash.Error(err.Error())
+		c.FlashError(flash, "error.database_update", "ERR_PROFILE_DB", err, false)
 	} else {
-		flash.Success("Profile has been updated!")
+		c.FlashSuccess(flash, "profile.updated")
 	}
 	flash.Store(&c.Controller)
 	c.List()
 }
 
-func validateUser(user models.User) map[string]map[string]string {
+func validateUser(user models.User, localizer *i18n.Localizer) map[string]map[string]string {
 	valid := validation.Validation{}
 	b, err := valid.Valid(&user)
 	if err != nil {
@@ -103,12 +104,12 @@ func validateUser(user models.User) map[string]map[string]string {
 		return nil
 	}
 	if !b {
-		return lib.CreateValidationMap(valid)
+		return lib.CreateValidationMap(valid, localizer)
 	}
 	return nil
 }
 
-func validateNewUser(nuser NewUser) map[string]map[string]string {
+func validateNewUser(nuser NewUser, localizer *i18n.Localizer) map[string]map[string]string {
 	valid := validation.Validation{}
 	b, err := valid.Valid(&nuser)
 	if err != nil {
@@ -116,7 +117,7 @@ func validateNewUser(nuser NewUser) map[string]map[string]string {
 		return nil
 	}
 	if !b {
-		return lib.CreateValidationMap(valid)
+		return lib.CreateValidationMap(valid, localizer)
 	}
 	return nil
 }
@@ -145,11 +146,13 @@ func (c *ProfileController) Create() {
 	}
 
 	if err := c.ParseForm(&user); err != nil {
-		logs.Error(err)
+		logs.Error("ERR_USER_FORM")
+		c.FlashError(flash, "error.form_parse", "ERR_USER_FORM", err, false)
+		flash.Store(&c.Controller)
 		return
 	}
 
-	if vMap := validateNewUser(uParams); vMap != nil {
+	if vMap := validateNewUser(uParams, c.Localizer); vMap != nil {
 		c.Data["validation"] = vMap
 		c.List()
 		return
@@ -159,13 +162,15 @@ func (c *ProfileController) Create() {
 	var existingUser models.User
 	err := o.QueryTable("user").Filter("Login", user.Login).One(&existingUser)
 	if err == nil {
-		flash.Warning("User with login \"" + user.Login + "\" is already exists!")
+		c.FlashWarning(flash, "profile.user_exists", user.Login)
 		flash.Store(&c.Controller)
 		logs.Info("User already exists:", user.Login)
 		c.List()
 		return
 	} else if err != orm.ErrNoRows {
 		logs.Error(err)
+		c.FlashError(flash, "error.database_read", "ERR_USER_LOOKUP", err, false)
+		flash.Store(&c.Controller)
 		return
 	}
 
@@ -175,6 +180,8 @@ func (c *ProfileController) Create() {
 		lastUser.Id = 0
 	} else if err1 != nil {
 		logs.Error(err1)
+		c.FlashError(flash, "error.database_read", "ERR_USER_SEQUENCE", err1, false)
+		flash.Store(&c.Controller)
 		return
 	}
 	newUser := models.User{
@@ -187,20 +194,23 @@ func (c *ProfileController) Create() {
 	}
 	hash, err := passlib.Hash(newUser.Password)
 	if err != nil {
-		logs.Error("Unable to hash password", err)
+		logs.Error("ERR_PASSWORD_HASH")
+		c.FlashError(flash, "profile.password_hash_failed", "ERR_PASSWORD_HASH", err, false)
+		flash.Store(&c.Controller)
 		return
 	}
 	newUser.Password = hash
 	if created, _, err := o.ReadOrCreate(&newUser, "Name"); err == nil {
 		if created {
 			logs.Info("New user with login \"" + user.Login + "\" created successfully.")
-			flash.Success("New user with login \"" + user.Login + "\" created successfully.")
+			c.FlashSuccess(flash, "profile.user_created", user.Login)
 			flash.Store(&c.Controller)
 		} else {
-			logs.Debug(newUser)
+			logs.Debug("Admin account already exists")
 		}
 	} else {
 		logs.Error(err)
+		c.FlashError(flash, "profile.user_create_failed", "ERR_USER_CREATE", err, false)
 	}
 
 	flash.Store(&c.Controller)
@@ -227,6 +237,8 @@ func (c *ProfileController) DeleteUser() {
 	id, err := c.GetInt(":key")
 	if err != nil {
 		logs.Error("Failed to get user ID:", err)
+		c.FlashError(flash, "profile.invalid_user", "ERR_USER_ID", err, false)
+		flash.Store(&c.Controller)
 		return
 	}
 
@@ -237,17 +249,20 @@ func (c *ProfileController) DeleteUser() {
 	err = o.Read(&user)
 	if err != nil {
 		logs.Error("Failed to get user:", err)
+		c.FlashError(flash, "profile.user_read_failed", "ERR_USER_READ", err, false)
+		flash.Store(&c.Controller)
 		return
 	}
 
 	if _, err := o.Delete(&user); err != nil {
 		logs.Error("Failed to delete user \""+user.Login+"\" profile:", err)
-		flash.Error("Failed to delete user \"" + user.Login + "\" profile")
+		c.FlashError(flash, "profile.user_delete_failed", "ERR_USER_DELETE", err, false)
+		flash.Store(&c.Controller)
 		return
 	}
 
 	logs.Info("New user with login \""+user.Login+"\" deleted successfully. It had user ID: ", id)
-	flash.Success("User  \"" + user.Login + "\" deleted successfully.")
+	c.FlashSuccess(flash, "profile.user_deleted", user.Login)
 	flash.Store(&c.Controller)
 	c.List()
 }
@@ -259,6 +274,8 @@ func (c *ProfileController) EditUser() {
 	id, err := c.GetInt(":key")
 	if err != nil {
 		logs.Error("Failed to get user ID:", err)
+		c.FlashError(flash, "profile.invalid_user", "ERR_USER_ID", err, false)
+		flash.Store(&c.Controller)
 		return
 	}
 
@@ -266,7 +283,8 @@ func (c *ProfileController) EditUser() {
 	user := models.User{Id: int64(id)}
 	if err := o.Read(&user); err != nil {
 		logs.Error("Failed to read user \""+user.Name+"\" profile:", err)
-		flash.Error("Failed to read user \"" + user.Name + "\" profile")
+		c.FlashError(flash, "profile.user_read_failed", "ERR_USER_READ", err, false)
+		flash.Store(&c.Controller)
 		return
 	}
 
@@ -286,12 +304,13 @@ func (c *ProfileController) EditUser() {
 
 	if _, err := o.Update(&user); err != nil {
 		logs.Error("Failed to update user \""+user.Name+"\" profile:", err)
-		flash.Error("Failed to update user \"" + user.Name + "\" profile")
+		c.FlashError(flash, "profile.user_update_failed", "ERR_USER_UPDATE", err, false)
+		flash.Store(&c.Controller)
 		return
 	}
 
 	logs.Info("Updated user profile with ID", id)
-	flash.Success("User \"" + user.Name + "\" updated successfully")
+	c.FlashSuccess(flash, "profile.user_updated", user.Name)
 	flash.Store(&c.Controller)
 	c.List()
 }

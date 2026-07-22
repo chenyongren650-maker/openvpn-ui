@@ -1,7 +1,7 @@
 {{ template "layout/base.html" . }}
 
 {{define "head"}}
-<title>OpenVPN</title>
+<title>OpenVPN - {{t .Localizer "profile.title"}}</title>
 {{end}}
 
 {{define "body"}}
@@ -10,9 +10,9 @@
 <div class="card">
   <div class="card-header d-flex p-0">
     <ul class="nav nav-pills ml-left p-2">
-      <li class="nav-item"><a class="nav-link active" href="#tab_1" data-toggle="tab">Edit own Profile</a></li>
-      {{ if .Userinfo.IsAdmin }} <li class="nav-item"><a class="nav-link" href="#tab_2" data-toggle="tab">Creating new Profiles</a></li> {{ else }}{{ end }}
-      {{ if .Userinfo.IsAdmin }} <li class="nav-item"><a class="nav-link" href="#tab_3" data-toggle="tab">Managing Profiles</a></li> {{ else }}{{ end }}
+      <li class="nav-item"><a class="nav-link active" href="#tab_1" data-toggle="tab">{{t .Localizer "profile.edit_own"}}</a></li>
+      {{ if .Userinfo.IsAdmin }} <li class="nav-item"><a class="nav-link" href="#tab_2" data-toggle="tab">{{t .Localizer "profile.create_profiles"}}</a></li> {{ else }}{{ end }}
+      {{ if .Userinfo.IsAdmin }} <li class="nav-item"><a class="nav-link" href="#tab_3" data-toggle="tab">{{t .Localizer "profile.manage_profiles"}}</a></li> {{ else }}{{ end }}
     </ul>
   </div>
   <div class="card-body">
@@ -20,13 +20,13 @@
 
       <!--TAB1-->
       <div class="tab-pane active" id="tab_1">
-        <h3>Editing {{ .Userinfo.Name }}'s profile</h3>{{ if .Userinfo.IsAdmin }}<span class="text-muted"> You are administrator. Wow!</span> {{ else }}{{ end }}
+        <h3>{{t .Localizer "profile.editing"}}：{{ .Userinfo.Name }}</h3>{{ if .Userinfo.IsAdmin }}<span class="text-muted">{{t .Localizer "profile.is_administrator"}}</span>{{end}}
         {{template "common/alert.html" .}}
         <form id="ProfileEdit" role="form" action="{{urlfor "ProfileController.Post"}}" method="post">
           <div class="card-body">
 
             <div class="form-group">
-              <label class="col-form-label" for="login">Login</label>
+              <label class="col-form-label" for="login">{{t .Localizer "common.login"}}</label>
               <div class="input-group mb-3">
                 <div class="input-group-prepend">
                   <span class="input-group-text"><i class="fas fa-user"></i></span>
@@ -36,45 +36,45 @@
             </div>
 
             <div class="form-group {{if field_error_exist .validation "Name" }}has-error{{end}}">
-              <label class="col-form-label" for="name">Name</label>
+              <label class="col-form-label" for="name">{{t .Localizer "common.name"}}</label>
               <div class="input-group mb-3">
                 <div class="input-group-prepend">
                   <span class="input-group-text"><i class="fas fa-user-plus"></i></span>
                 </div>
-                <input type="text" class="form-control" id="name" name="Name" placeholder="Enter name" value="{{ .profile.Name }}">
+                <input type="text" class="form-control" id="name" name="Name" placeholder="{{t .Localizer "profile.enter_name"}}" value="{{ .profile.Name }}">
                 <span class="text-muted"> {{template "common/fvalid.html" field_error_message .validation "Name" }}</span>
               </div>
             </div>
 
             <div class="form-group {{if field_error_exist .validation "Email" }}has-error{{end}}">
-              <label class="col-form-label" for="email">Email address</label>
+              <label class="col-form-label" for="email">{{t .Localizer "common.email"}}</label>
               <div class="input-group mb-3">
                 <div class="input-group-prepend">
                   <span class="input-group-text"><i class="fas fa-envelope"></i></span>
                 </div>
-                <input type="email" class="form-control" id="email" name="Email" placeholder="Enter email" value="{{ .profile.Email }}">
+                <input type="email" class="form-control" id="email" name="Email" placeholder="{{t .Localizer "profile.enter_email"}}" value="{{ .profile.Email }}">
                 <span class="text-muted"> {{template "common/fvalid.html" field_error_message .validation "Email" }}</span>
               </div>
             </div>
 
             <div class="form-group {{if field_error_exist .validation "Password" }}has-error{{end}}">
-              <label class="col-form-label" for="password">New Password</label>
+              <label class="col-form-label" for="password">{{t .Localizer "profile.new_password"}}</label>
               <div class="input-group mb-3">
                 <div class="input-group-prepend">
                   <span class="input-group-text"><i class="fas fa-lock"></i></span>
                 </div>
-                <input type="password" class="form-control" id="password" name="Password" placeholder="Enter password">
+                <input type="password" class="form-control" id="password" name="Password" placeholder="{{t .Localizer "profile.enter_password"}}">
                 <span class="text-muted"> {{template "common/fvalid.html" field_error_message .validation "Password" }}</span>
               </div>
             </div>
 
             <div class="form-group {{if field_error_exist .validation "Repassword" }}has-error{{end}}">
-              <label class="col-form-label" for="Repassword">Repeat password</label>
+              <label class="col-form-label" for="Repassword">{{t .Localizer "profile.repeat_password"}}</label>
               <div class="input-group mb-3">
                 <div class="input-group-prepend">
                   <span class="input-group-text"><i class="fas fa-lock"></i></span>
                 </div>
-                <input type="password" class="form-control" id="Repassword" name="Repassword" placeholder="Repeat password">
+                <input type="password" class="form-control" id="Repassword" name="Repassword" placeholder="{{t .Localizer "profile.repeat_password"}}">
                 <span class="text-muted"> {{template "common/fvalid.html" field_error_message .validation "Repassword" }}</span>
               </div>
             </div>
@@ -83,7 +83,7 @@
           </div>
 
           <div class="modal-footer justify-content-between">
-            <button type="submit" class="btn btn-primary" form="ProfileEdit" style="width: 135px;">Save Profile</button>
+            <button type="submit" class="btn btn-primary" form="ProfileEdit" style="width: 135px;">{{t .Localizer "profile.save"}}</button>
           </div>
         </form>
       </div>
@@ -91,73 +91,72 @@
 
       <!--TAB2-->
       <div class="tab-pane" id="tab_2">
-        <h3>Create new profile</h3>
+        <h3>{{t .Localizer "profile.create_new"}}</h3>
         {{template "common/alert.html" .}}
         <form id="ProfileCreate" role="form" action="{{urlfor "ProfileController.Create"}}" method="post">
           <div class="card-body">
 
             <div class="form-group">
-              <label class="col-form-label" for="newlogin">Login</label>
+              <label class="col-form-label" for="newlogin">{{t .Localizer "common.login"}}</label>
               <div class="input-group mb-3">
                 <div class="input-group-prepend">
                   <span class="input-group-text"><i class="fas fa-user"></i></span>
                 </div>
-                <input type="text" class="form-control" id="newlogin" name="NewLogin" placeholder="Enter login">
+                <input type="text" class="form-control" id="newlogin" name="NewLogin" placeholder="{{t .Localizer "profile.enter_login"}}">
               </div>
             </div>
 
             <div class="custom-control custom-checkbox form-group {{if field_error_exist .validation "IsAdmin" }}has-error{{end}}">
               <input class="custom-control-input custom-control-input-danger" type="checkbox" id="isadmin" name="IsAdmin">
-              <label for="isadmin" class="custom-control-label" style="color: #dd4b39;">This user is Admin.</label> <span class="text-muted"> 
-                &nbsp; Not Admins can maintain Certificates, view Logs and Connections. Server configuration and User management is not accessible.</span>
+              <label for="isadmin" class="custom-control-label" style="color: #dd4b39;">{{t .Localizer "profile.user_is_admin"}}</label> <span class="text-muted">{{t .Localizer "profile.non_admin_help"}}</span>
             </div>
 
             <div class="form-group {{if field_error_exist .validation "NewName" }}has-error{{end}}">
-              <label class="col-form-label" for="newname">Name</label>
+              <label class="col-form-label" for="newname">{{t .Localizer "common.name"}}</label>
               <div class="input-group mb-3">
                 <div class="input-group-prepend">
                   <span class="input-group-text"><i class="fas fa-user-plus"></i></span>
                 </div>
-                <input type="text" class="form-control" id="newname" name="NewName" placeholder="Enter name">
+                <input type="text" class="form-control" id="newname" name="NewName" placeholder="{{t .Localizer "profile.enter_name"}}">
                 <span class="text-muted"> {{template "common/fvalid.html" field_error_message .validation "NewName" }}</span>
               </div>
             </div>
 
             <div class="form-group {{if field_error_exist .validation "NewEmail" }}has-error{{end}}">
-              <label class="col-form-label" for="email">Email address</label>
+              <label class="col-form-label" for="newemail">{{t .Localizer "common.email"}}</label>
               <div class="input-group mb-3">
                 <div class="input-group-prepend">
                   <span class="input-group-text"><i class="fa fa-envelope"></i></span>
                 </div>
-                <input type="email" class="form-control" id="newemail" name="NewEmail" placeholder="Enter email">
+                <input type="email" class="form-control" id="newemail" name="NewEmail" placeholder="{{t .Localizer "profile.enter_email"}}">
                 <span class="text-muted"> {{template "common/fvalid.html" field_error_message .validation "NewEmail" }}</span>
               </div>
             </div>
 
             <div class="form-group {{if field_error_exist .validation "NewPassword" }}has-error{{end}}">
-              <label class="col-form-label" for="newpassword">Enter user password</label>
+              <label class="col-form-label" for="newpassword">{{t .Localizer "profile.enter_user_password"}}</label>
               <div class="input-group mb-3">
                 <div class="input-group-prepend">
                   <span class="input-group-text"><i class="fas fa-lock"></i></span>
                 </div>
-                <input type="password" class="form-control" id="newpassword" name="NewPassword" placeholder="Enter new user password">
+                <input type="password" class="form-control" id="newpassword" name="NewPassword" placeholder="{{t .Localizer "profile.enter_user_password"}}">
                 <span class="text-muted"> {{template "common/fvalid.html" field_error_message .validation "NewPassword" }}</span>
               </div>
             </div>
             <div class="form-group {{if field_error_exist .validation "NewRepassword" }}has-error{{end}}">
-              <label class="col-form-label" for="newrepassword">Repeat user password</label>
+              <label class="col-form-label" for="newrepassword">{{t .Localizer "profile.repeat_user_password"}}</label>
               <div class="input-group mb-3">
                 <div class="input-group-prepend">
                   <span class="input-group-text"><i class="fas fa-lock"></i></span>
                 </div>
-                <input type="password" class="form-control" id="newrepassword" name="NewRepassword" placeholder="Repeat new user password">
+                <input type="password" class="form-control" id="newrepassword" name="NewRepassword" placeholder="{{t .Localizer "profile.repeat_user_password"}}">
                 <span class="text-muted"> {{template "common/fvalid.html" field_error_message .validation "NewRepassword" }}</span>
               </div>
             </div>
           </div>
 
           <div class="modal-footer justify-content-between">
-            <button type="submit" class="btn btn-primary" style="width: 135px;">Create Profile</button>
+            <button type="submit" class="btn btn-primary" style="width: 135px;">{{t .Localizer "profile.create"}}</button>
           </div>
 
         </form>
@@ -166,21 +165,21 @@
 
       <!--TAB3-->
       <div class="tab-pane" id="tab_3">
-        <h3>Profiles management</h3>
+        <h3>{{t .Localizer "profile.management"}}</h3>
         {{template "common/alert.html" .}}
         <div class="table-responsive">
           <table class="table no-margin">
             <thead>
             <tr>
-              <th>Id</th>
-              <th>Admin</th>
-              <th>Login</th>
-              <th>Name</th>
-              <th>Email</th>
-              <th>Created</th>
-              <th>Last Login</th>
-              <th>Updated</th>
-              <th>Action</th>
+              <th>ID</th>
+              <th>{{t .Localizer "profile.admin"}}</th>
+              <th>{{t .Localizer "common.login"}}</th>
+              <th>{{t .Localizer "common.name"}}</th>
+              <th>{{t .Localizer "common.email"}}</th>
+              <th>{{t .Localizer "common.created"}}</th>
+              <th>{{t .Localizer "profile.last_login"}}</th>
+              <th>{{t .Localizer "common.updated"}}</th>
+              <th>{{t .Localizer "common.action"}}</th>
             </tr>
             </thead>
             <tbody>
@@ -215,33 +214,33 @@
                       {{end}}
                     </td>
                     <td>
-                      {{ dateformat .Created "2006-01-02 15:04" }}
+                      {{ dateformat .Created "2006-01-02 15:04:05" }}
                     </td>
-                    {{ $lastLoginTime := dateformat .Lastlogintime "2006-01-02 15:04" }}
-                    {{if eq $lastLoginTime "0001-01-01 00:00"}}
+                    {{ $lastLoginTime := dateformat .Lastlogintime "2006-01-02 15:04:05" }}
+                    {{if eq $lastLoginTime "0001-01-01 00:00:00"}}
                     <td>
-                     Not used
+                     {{t $.Localizer "common.not_used"}}
                     </td>
                     {{else}}
                     <td>
-                      {{ dateformat .Lastlogintime "2006-01-02 15:04" }}
+                      {{ dateformat .Lastlogintime "2006-01-02 15:04:05" }}
                     </td>
                     {{end}}
                     </td>
                     <td>
-                      {{ dateformat .Updated "2006-01-02 15:04" }}
+                      {{ dateformat .Updated "2006-01-02 15:04:05" }}
                     </td>
                     <td>
                       {{ if eq .Id 1 }}
-                      <a class="btn btn-default btn-xs" disabled>Update</a>
+                      <a class="btn btn-default btn-xs" disabled>{{t $.Localizer "common.update"}}</a>
                       {{else}}
-                      <input type="submit" class="btn btn-primary btn-xs" title="Update User" style="font-size: 70%;" value="Update">
+                      <button type="submit" class="btn btn-primary btn-xs" title="{{t $.Localizer "profile.update_user"}}" style="font-size: 70%;">{{t $.Localizer "common.update"}}</button>
                       {{end}}
                       {{ if eq .Id 1 }}
-                      <a class="btn btn-default btn-xs" disabled>Delete</a>
+                      <a class="btn btn-default btn-xs" disabled>{{t $.Localizer "common.delete"}}</a>
                       {{else}}
-                      <a href="{{urlfor "ProfileController.DeleteUser" ":key" .Id}}" class="btn btn-danger btn-xs" title="Burn" style="font-size: 70%" onclick="return confirm('Are you sure you want to delete this user?');">
-                        Delete
+                      <a href="{{urlfor "ProfileController.DeleteUser" ":key" .Id}}" class="btn btn-danger btn-xs" title="{{t $.Localizer "common.delete"}}" style="font-size: 70%" onclick="return confirm('{{t $.Localizer "profile.confirm_delete_user"}}');">
+                        {{t $.Localizer "common.delete"}}
                       </a>
                       {{end}}
                     </td>
