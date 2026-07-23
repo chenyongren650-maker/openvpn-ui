@@ -28,8 +28,8 @@ func TestUpgradePreservesLegacyTablesAndCreatesFoundationSchema(t *testing.T) {
 	if err != nil {
 		t.Fatalf("run migration: %v", err)
 	}
-	if !reflect.DeepEqual(result.AppliedVersions, []int64{1}) {
-		t.Fatalf("applied versions = %v, want [1]", result.AppliedVersions)
+	if !reflect.DeepEqual(result.AppliedVersions, []int64{1, 2}) {
+		t.Fatalf("applied versions = %v, want [1 2]", result.AppliedVersions)
 	}
 	if result.BackupPath == "" {
 		t.Fatal("expected a pre-migration backup")
@@ -74,8 +74,8 @@ func TestMigrationIsIdempotent(t *testing.T) {
 		t.Fatalf("second migration run: %v", err)
 	}
 
-	if !reflect.DeepEqual(firstResult.AppliedVersions, []int64{1}) {
-		t.Fatalf("first applied versions = %v, want [1]", firstResult.AppliedVersions)
+	if !reflect.DeepEqual(firstResult.AppliedVersions, []int64{1, 2}) {
+		t.Fatalf("first applied versions = %v, want [1 2]", firstResult.AppliedVersions)
 	}
 	if len(secondResult.AppliedVersions) != 0 {
 		t.Fatalf("second applied versions = %v, want none", secondResult.AppliedVersions)
@@ -98,8 +98,127 @@ func TestMigrationIsIdempotent(t *testing.T) {
 	if err := db.QueryRow(`SELECT COUNT(*) FROM schema_migrations`).Scan(&migrationCount); err != nil {
 		t.Fatalf("count migration rows: %v", err)
 	}
-	if migrationCount != 1 {
-		t.Fatalf("migration row count = %d, want 1", migrationCount)
+	if migrationCount != 2 {
+		t.Fatalf("migration row count = %d, want 2", migrationCount)
+	}
+}
+
+func TestCertificateHistoryCompatibilityMigrationPreservesMetadata(t *testing.T) {
+	databasePath := filepath.Join(t.TempDir(), "db", "data.db")
+	if _, err := run(
+		context.Background(),
+		databasePath,
+		registeredMigrations[:1],
+		fixedClock,
+	); err != nil {
+		t.Fatalf("initialize v1 database: %v", err)
+	}
+
+	db := openTestDatabase(t, databasePath)
+	if _, err := db.Exec(`INSERT INTO certificates (
+		id, vpn_user_id, common_name, serial_number, fingerprint, status,
+		permission_type, static_ip, validity_mode, business_expires_at,
+		technical_expires_at, device_note, created_at, revoked_at, archived_at
+	) VALUES (
+		7, 42, 'test-client', 'a1', 'fingerprint-a1', 'valid',
+		'restricted', '10.250.71.10', 'custom', '2027-01-01T00:00:00Z',
+		'2027-01-02T00:00:00Z', 'test device', '2026-01-01T00:00:00Z', NULL, NULL
+	)`); err != nil {
+		db.Close()
+		t.Fatalf("seed v1 certificate: %v", err)
+	}
+	if _, err := db.Exec(`INSERT INTO totp_identities (
+		id, certificate_id, tfa_name, issuer, status, created_at
+	) VALUES (9, 7, 'test-user@example.invalid', 'TEST', 'active', '2026-01-01T00:00:00Z')`); err != nil {
+		db.Close()
+		t.Fatalf("seed v1 TOTP identity metadata: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("close v1 database: %v", err)
+	}
+
+	result, err := run(context.Background(), databasePath, registeredMigrations, fixedClock)
+	if err != nil {
+		t.Fatalf("apply certificate compatibility migration: %v", err)
+	}
+	if !reflect.DeepEqual(result.AppliedVersions, []int64{2}) {
+		t.Fatalf("applied versions = %v, want [2]", result.AppliedVersions)
+	}
+	if result.BackupPath == "" {
+		t.Fatal("expected a pre-v2 backup")
+	}
+
+	db = openTestDatabase(t, databasePath)
+	defer db.Close()
+
+	var (
+		commonName, serialNumber, fingerprint, status, permissionType string
+		staticIP, validityMode, deviceNote, tfaName, issuer           string
+		certificateID, totpID                                         int64
+	)
+	if err := db.QueryRow(`SELECT
+		id, common_name, serial_number, fingerprint, status,
+		permission_type, static_ip, validity_mode, device_note
+	FROM certificates WHERE id = 7`).Scan(
+		&certificateID,
+		&commonName,
+		&serialNumber,
+		&fingerprint,
+		&status,
+		&permissionType,
+		&staticIP,
+		&validityMode,
+		&deviceNote,
+	); err != nil {
+		t.Fatalf("read migrated certificate: %v", err)
+	}
+	if certificateID != 7 || commonName != "test-client" || serialNumber != "a1" ||
+		fingerprint != "fingerprint-a1" || status != "valid" ||
+		permissionType != "restricted" || staticIP != "10.250.71.10" ||
+		validityMode != "custom" || deviceNote != "test device" {
+		t.Fatalf("migrated certificate metadata changed unexpectedly")
+	}
+
+	if err := db.QueryRow(`SELECT id, certificate_id, tfa_name, issuer
+		FROM totp_identities WHERE id = 9`).Scan(
+		&totpID,
+		&certificateID,
+		&tfaName,
+		&issuer,
+	); err != nil {
+		t.Fatalf("read migrated TOTP identity metadata: %v", err)
+	}
+	if totpID != 9 || certificateID != 7 ||
+		tfaName != "test-user@example.invalid" || issuer != "TEST" {
+		t.Fatalf("migrated TOTP identity metadata changed unexpectedly")
+	}
+
+	// Renewed certificate history must allow the same CN and static IP while
+	// preserving the serial number as the stable unique identity.
+	if _, err := db.Exec(`INSERT INTO certificates (
+		common_name, serial_number, status, static_ip
+	) VALUES ('test-client', 'A2', 'revoked', '10.250.71.10')`); err != nil {
+		t.Fatalf("insert renewed certificate history: %v", err)
+	}
+	if _, err := db.Exec(`INSERT INTO certificates (
+		common_name, serial_number, status
+	) VALUES ('another-client', 'A1', 'valid')`); err == nil {
+		t.Fatal("expected case-insensitive duplicate serial number to fail")
+	}
+
+	var foreignKeyViolations int
+	rows, err := db.Query(`PRAGMA foreign_key_check`)
+	if err != nil {
+		t.Fatalf("check foreign keys: %v", err)
+	}
+	for rows.Next() {
+		foreignKeyViolations++
+	}
+	if err := rows.Close(); err != nil {
+		t.Fatalf("close foreign key check rows: %v", err)
+	}
+	if foreignKeyViolations != 0 {
+		t.Fatalf("foreign key violations = %d, want 0", foreignKeyViolations)
 	}
 }
 
@@ -109,7 +228,7 @@ func TestFailedMigrationRollsBackEntirePendingBatch(t *testing.T) {
 
 	failingMigrations := append([]Migration{}, registeredMigrations...)
 	failingMigrations = append(failingMigrations, Migration{
-		Version: 2,
+		Version: 3,
 		Name:    "forced_failure",
 		Up: []string{
 			`CREATE TABLE should_rollback (id INTEGER PRIMARY KEY)`,
@@ -122,7 +241,7 @@ func TestFailedMigrationRollsBackEntirePendingBatch(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected migration failure")
 	}
-	if !strings.Contains(err.Error(), "migration 2 (forced_failure), statement 2") {
+	if !strings.Contains(err.Error(), "migration 3 (forced_failure), statement 2") {
 		t.Fatalf("unexpected migration error: %v", err)
 	}
 	if len(result.AppliedVersions) != 0 {
