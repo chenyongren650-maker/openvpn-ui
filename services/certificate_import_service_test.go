@@ -249,6 +249,27 @@ func TestImportCertificateMetadataPreservesPlatformOwnedFields(t *testing.T) {
 		!storedStaticIP.Valid || storedStaticIP.String != staticIP {
 		t.Fatalf("platform-owned fields were not preserved")
 	}
+	withoutIndexStaticIP := updated[0]
+	withoutIndexStaticIP.StaticIP = nil
+	withoutIndexStaticIP.TechnicalExpiresAt = updatedExpiry.AddDate(1, 0, 0)
+	if _, err := importCertificateMetadata(
+		context.Background(),
+		db,
+		[]certificateMetadata{withoutIndexStaticIP},
+		time.Date(2026, time.July, 23, 14, 0, 0, 0, time.UTC),
+	); err != nil {
+		t.Fatalf("reconcile certificate without legacy static IP metadata: %v", err)
+	}
+	if err := db.QueryRow(`SELECT static_ip FROM certificates
+		WHERE serial_number = 'A1'`).Scan(&storedStaticIP); err != nil {
+		t.Fatalf("read preserved static IP after reconciliation: %v", err)
+	}
+	if !storedStaticIP.Valid || storedStaticIP.String != staticIP {
+		t.Fatalf(
+			"database-owned static IP after reconciliation = %v",
+			storedStaticIP,
+		)
+	}
 
 	var certificateCount int
 	if err := db.QueryRow(`SELECT COUNT(*) FROM certificates`).Scan(&certificateCount); err != nil {

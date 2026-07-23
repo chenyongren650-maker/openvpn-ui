@@ -222,6 +222,7 @@
   "easyrsa.view_vars": "View VARs",
   "error.access_denied": "Access denied",
   "error.admin_required": "This operation requires administrator permission",
+  "error.audit_unavailable": "The audit log is unavailable; the operation was stopped before making changes",
   "error.csrf_invalid": "CSRF validation failed; refresh the page and try again",
   "error.database_read": "Failed to read from the database",
   "error.database_update": "Failed to update the database",

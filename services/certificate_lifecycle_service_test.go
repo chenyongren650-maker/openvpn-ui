@@ -41,6 +41,7 @@ type fakeLifecycleRunner struct {
 	calls          []lifecycleCommandCall
 	failNextRevoke int
 	failNextCRL    int
+	renewal        func() error
 }
 
 func (r *fakeLifecycleRunner) Run(
@@ -59,6 +60,12 @@ func (r *fakeLifecycleRunner) Run(
 		WorkingDir:  workingDir,
 		Environment: append([]string(nil), environment...),
 	})
+	if len(args) >= 2 && args[len(args)-2] == "renew" {
+		if r.renewal == nil {
+			return errors.New("synthetic renewal handler is unavailable")
+		}
+		return r.renewal()
+	}
 	command := args[len(args)-1]
 	if len(args) >= 2 &&
 		(args[len(args)-2] == "revoke" ||
@@ -97,6 +104,18 @@ func (r *fakeLifecycleRunner) Run(
 		return os.WriteFile(r.crlPath, []byte("synthetic-crl-after-revoke\n"), 0o600)
 	}
 	return fmt.Errorf("unexpected synthetic Easy-RSA command: %v", args)
+}
+
+func (r *fakeLifecycleRunner) renewalCount() int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	count := 0
+	for _, call := range r.calls {
+		if len(call.Args) >= 2 && call.Args[len(call.Args)-2] == "renew" {
+			count++
+		}
+	}
+	return count
 }
 
 func (r *fakeLifecycleRunner) commandCounts() (revoke int, genCRL int) {
@@ -236,7 +255,7 @@ func TestArchiveCertificateRequiresAdministratorPermission(t *testing.T) {
 }
 
 func TestRevokeCertificateIsIdempotentAndMarksStaticIPPendingRelease(t *testing.T) {
-	service, db, _, runner, disconnector := newLifecycleTestService(
+	service, db, pkiDir, runner, disconnector := newLifecycleTestService(
 		t,
 		"valid",
 		"test-client",
@@ -257,6 +276,13 @@ func TestRevokeCertificateIsIdempotentAndMarksStaticIPPendingRelease(t *testing.
 	}
 	if first.AlreadyRevoked || !first.Disconnected || first.DisconnectFailed {
 		t.Fatalf("unexpected first revoke result: %+v", first)
+	}
+	crlInfo, err := os.Stat(filepath.Join(pkiDir, "crl.pem"))
+	if err != nil {
+		t.Fatalf("stat generated CRL: %v", err)
+	}
+	if permissions := crlInfo.Mode().Perm(); permissions != 0o644 {
+		t.Fatalf("generated CRL permissions = %04o, want 0644", permissions)
 	}
 	second, err := service.RevokeCertificate(
 		context.Background(),
@@ -300,7 +326,7 @@ func TestRevokeCertificateIsIdempotentAndMarksStaticIPPendingRelease(t *testing.
 		t,
 		db,
 		auditActionRevoke,
-		[]string{"success", "already_revoked"},
+		[]string{CertificateAuditResultStarted, "success", "already_revoked"},
 	)
 }
 
@@ -339,6 +365,49 @@ func TestRevokeCertificateRequiresAdministratorPermission(t *testing.T) {
 	}
 	assertLifecycleAuditResults(t, db, auditActionRevoke, []string{"failed"})
 	assertLatestAuditError(t, db, "permission_denied")
+}
+
+func TestRevokeCertificateStopsWhenAuditIsUnavailable(t *testing.T) {
+	service, db, pkiDir, runner, disconnector := newLifecycleTestService(
+		t,
+		"valid",
+		"revoke-audit-client",
+		"A1",
+		"",
+	)
+	defer db.Close()
+	before := snapshotTestPKI(t, pkiDir)
+	if _, err := db.Exec(`CREATE TRIGGER reject_revoke_audit
+		BEFORE INSERT ON audit_logs
+		WHEN NEW.action = 'certificate.revoke'
+		BEGIN
+			SELECT RAISE(ABORT, 'forced revoke audit failure');
+		END`); err != nil {
+		t.Fatalf("create revoke audit failure trigger: %v", err)
+	}
+
+	_, err := service.RevokeCertificate(
+		context.Background(),
+		1,
+		"revoke-audit-client",
+		adminLifecycleActor(),
+	)
+	if err == nil {
+		t.Fatal("revoke continued while the mandatory audit log was unavailable")
+	}
+	if revoke, genCRL := runner.commandCounts(); revoke != 0 || genCRL != 0 {
+		t.Fatalf(
+			"revoke executed Easy-RSA before audit: revoke=%d gen-crl=%d",
+			revoke,
+			genCRL,
+		)
+	}
+	if disconnector.callCount() != 0 {
+		t.Fatal("revoke disconnected a session before the audit record existed")
+	}
+	if !reflect.DeepEqual(before, snapshotTestPKI(t, pkiDir)) {
+		t.Fatal("revoke changed the isolated PKI before the audit record existed")
+	}
 }
 
 func TestConcurrentRevokeExecutesEasyRSAOnce(t *testing.T) {
@@ -392,8 +461,8 @@ func TestConcurrentRevokeExecutesEasyRSAOnce(t *testing.T) {
 		WHERE action = ?`, auditActionRevoke).Scan(&auditCount); err != nil {
 		t.Fatalf("count concurrent revoke audits: %v", err)
 	}
-	if auditCount != requests {
-		t.Fatalf("concurrent revoke audit count = %d, want %d", auditCount, requests)
+	if auditCount != requests+1 {
+		t.Fatalf("concurrent revoke audit count = %d, want %d", auditCount, requests+1)
 	}
 }
 
@@ -440,7 +509,17 @@ func TestRevokeRetriesAfterCRLFailureWithoutRepeatingRevoke(t *testing.T) {
 	if revoke != 1 || genCRL != 2 {
 		t.Fatalf("retry command counts = revoke %d, gen-crl %d; want 1 and 2", revoke, genCRL)
 	}
-	assertLifecycleAuditResults(t, db, auditActionRevoke, []string{"failed", "success"})
+	assertLifecycleAuditResults(
+		t,
+		db,
+		auditActionRevoke,
+		[]string{
+			CertificateAuditResultStarted,
+			"failed",
+			CertificateAuditResultStarted,
+			"success",
+		},
+	)
 }
 
 func TestRevokeRetriesAfterDatabaseFailureWithoutRepeatingRevoke(t *testing.T) {
@@ -630,7 +709,7 @@ func TestDownloadableCertificateBlocksUnsafeLifecycleStates(t *testing.T) {
 }
 
 func TestRenewCertificateSyncsMetadataAndIsIdempotent(t *testing.T) {
-	service, db, pkiDir, _, _ := newLifecycleTestService(
+	service, db, pkiDir, runner, _ := newLifecycleTestService(
 		t,
 		"valid",
 		"renew-test-client",
@@ -645,28 +724,28 @@ func TestRenewCertificateSyncsMetadataAndIsIdempotent(t *testing.T) {
 	); err != nil {
 		t.Fatalf("seed renewal static IP allocation: %v", err)
 	}
+	if _, err := db.Exec(`INSERT INTO totp_identities (
+		certificate_id, tfa_name, issuer, status, created_at
+	) VALUES (1, 'user@example.invalid', 'ZHISUAN', 'active', ?)`,
+		lifecycleTestNow,
+	); err != nil {
+		t.Fatalf("seed renewal TOTP identity metadata: %v", err)
+	}
 
-	executorCalls := 0
+	runner.renewal = func() error {
+		prepareSyntheticRenewal(
+			t,
+			pkiDir,
+			"renew-test-client",
+			"A1",
+			"B2",
+		)
+		return nil
+	}
 	result, err := service.RenewCertificate(
 		context.Background(),
 		1,
-		"user@example.invalid",
 		adminLifecycleActor(),
-		func(state CertificateState, tfaName string) error {
-			executorCalls++
-			if state.SerialNumber != "A1" ||
-				tfaName != "user@example.invalid" {
-				return errors.New("unexpected renewal executor input")
-			}
-			prepareSyntheticRenewal(
-				t,
-				pkiDir,
-				state.CommonName,
-				state.SerialNumber,
-				"B2",
-			)
-			return nil
-		},
 	)
 	if err != nil {
 		t.Fatalf("renew certificate: %v", err)
@@ -674,19 +753,50 @@ func TestRenewCertificateSyncsMetadataAndIsIdempotent(t *testing.T) {
 	if result.AlreadyRenewed ||
 		result.NewCertificateID == 0 ||
 		result.CommonName != "renew-test-client" ||
-		executorCalls != 1 {
-		t.Fatalf("unexpected renewal result: %+v, calls=%d", result, executorCalls)
+		runner.renewalCount() != 1 {
+		t.Fatalf(
+			"unexpected renewal result: %+v, calls=%d",
+			result,
+			runner.renewalCount(),
+		)
+	}
+	runner.mu.Lock()
+	renewalCall := runner.calls[0]
+	runner.mu.Unlock()
+	if renewalCall.Binary == "/bin/bash" ||
+		renewalCall.Binary == "/bin/sh" ||
+		!reflect.DeepEqual(
+			renewalCall.Args[len(renewalCall.Args)-2:],
+			[]string{"renew", "renew-test-client"},
+		) {
+		t.Fatalf("renewal did not use a direct Easy-RSA argument array: %+v", renewalCall)
 	}
 
-	var newStatus string
+	var newStatus, newStaticIP string
 	if err := db.QueryRow(
-		`SELECT status FROM certificates WHERE id = ?`,
+		`SELECT status, static_ip FROM certificates WHERE id = ?`,
 		result.NewCertificateID,
-	).Scan(&newStatus); err != nil {
+	).Scan(&newStatus, &newStaticIP); err != nil {
 		t.Fatalf("read synchronized renewed certificate: %v", err)
 	}
-	if newStatus != "valid" {
-		t.Fatalf("renewed database status = %q, want valid", newStatus)
+	if newStatus != "valid" || newStaticIP != "10.250.71.10" {
+		t.Fatalf(
+			"renewed database status=%q static_ip=%q",
+			newStatus,
+			newStaticIP,
+		)
+	}
+	var totpCertificateID int64
+	if err := db.QueryRow(`SELECT certificate_id FROM totp_identities
+		WHERE tfa_name = 'user@example.invalid'`).Scan(&totpCertificateID); err != nil {
+		t.Fatalf("read transferred TOTP identity metadata: %v", err)
+	}
+	if totpCertificateID != result.NewCertificateID {
+		t.Fatalf(
+			"renewed TOTP identity certificate=%d, want %d",
+			totpCertificateID,
+			result.NewCertificateID,
+		)
 	}
 	var allocationCertificateID int64
 	var allocationStatus string
@@ -721,21 +831,16 @@ func TestRenewCertificateSyncsMetadataAndIsIdempotent(t *testing.T) {
 	retry, err := service.RenewCertificate(
 		context.Background(),
 		1,
-		"user@example.invalid",
 		adminLifecycleActor(),
-		func(CertificateState, string) error {
-			executorCalls++
-			return errors.New("idempotent retry executed renewal")
-		},
 	)
 	if err != nil || !retry.AlreadyRenewed ||
 		retry.NewCertificateID != result.NewCertificateID ||
-		executorCalls != 1 {
+		runner.renewalCount() != 1 {
 		t.Fatalf(
 			"idempotent renewal retry = %+v, error=%v, calls=%d",
 			retry,
 			err,
-			executorCalls,
+			runner.renewalCount(),
 		)
 	}
 
@@ -766,12 +871,12 @@ func TestRenewCertificateSyncsMetadataAndIsIdempotent(t *testing.T) {
 		t,
 		db,
 		CertificateAuditActionRenew,
-		[]string{"success", "already_renewed"},
+		[]string{CertificateAuditResultStarted, "success", "already_renewed"},
 	)
 }
 
 func TestRenewCertificateRequiresAdministratorPermission(t *testing.T) {
-	service, db, pkiDir, _, _ := newLifecycleTestService(
+	service, db, pkiDir, runner, _ := newLifecycleTestService(
 		t,
 		"valid",
 		"renew-permission-client",
@@ -781,18 +886,17 @@ func TestRenewCertificateRequiresAdministratorPermission(t *testing.T) {
 	defer db.Close()
 	before := snapshotTestPKI(t, pkiDir)
 	executorCalled := false
+	runner.renewal = func() error {
+		executorCalled = true
+		return nil
+	}
 	_, err := service.RenewCertificate(
 		context.Background(),
 		1,
-		"",
 		CertificateLifecycleActor{
 			UserID:    2,
 			SourceIP:  "192.0.2.20",
 			RequestID: "request-renew-non-admin",
-		},
-		func(CertificateState, string) error {
-			executorCalled = true
-			return nil
 		},
 	)
 	if !errors.Is(err, ErrCertificateForbidden) {
@@ -813,8 +917,50 @@ func TestRenewCertificateRequiresAdministratorPermission(t *testing.T) {
 	assertLatestAuditError(t, db, "permission_denied")
 }
 
+func TestRenewCertificateStopsWhenAuditIsUnavailable(t *testing.T) {
+	service, db, pkiDir, runner, _ := newLifecycleTestService(
+		t,
+		"valid",
+		"renew-audit-client",
+		"A1",
+		"",
+	)
+	defer db.Close()
+	before := snapshotTestPKI(t, pkiDir)
+	if _, err := db.Exec(`CREATE TRIGGER reject_renew_audit
+		BEFORE INSERT ON audit_logs
+		WHEN NEW.action = 'certificate.renew'
+		BEGIN
+			SELECT RAISE(ABORT, 'forced renewal audit failure');
+		END`); err != nil {
+		t.Fatalf("create renewal audit failure trigger: %v", err)
+	}
+	runner.renewal = func() error {
+		t.Fatal("renewal command ran before the audit record existed")
+		return nil
+	}
+
+	_, err := service.RenewCertificate(
+		context.Background(),
+		1,
+		adminLifecycleActor(),
+	)
+	if err == nil {
+		t.Fatal("renewal continued while the mandatory audit log was unavailable")
+	}
+	if runner.renewalCount() != 0 {
+		t.Fatalf(
+			"renewal command calls before audit = %d, want 0",
+			runner.renewalCount(),
+		)
+	}
+	if !reflect.DeepEqual(before, snapshotTestPKI(t, pkiDir)) {
+		t.Fatal("renewal changed the isolated PKI before the audit record existed")
+	}
+}
+
 func TestRenewCertificateRetryCompensatesMetadataSyncFailure(t *testing.T) {
-	service, db, pkiDir, _, _ := newLifecycleTestService(
+	service, db, pkiDir, runner, _ := newLifecycleTestService(
 		t,
 		"valid",
 		"renew-retry-client",
@@ -831,23 +977,20 @@ func TestRenewCertificateRetryCompensatesMetadataSyncFailure(t *testing.T) {
 		t.Fatalf("create renewal metadata failure trigger: %v", err)
 	}
 
-	executorCalls := 0
+	runner.renewal = func() error {
+		prepareSyntheticRenewal(
+			t,
+			pkiDir,
+			"renew-retry-client",
+			"A1",
+			"B2",
+		)
+		return nil
+	}
 	_, err := service.RenewCertificate(
 		context.Background(),
 		1,
-		"",
 		adminLifecycleActor(),
-		func(state CertificateState, _ string) error {
-			executorCalls++
-			prepareSyntheticRenewal(
-				t,
-				pkiDir,
-				state.CommonName,
-				state.SerialNumber,
-				"B2",
-			)
-			return nil
-		},
 	)
 	if !errors.Is(err, ErrCertificateRenewal) {
 		t.Fatalf("renewal metadata failure error = %v", err)
@@ -859,24 +1002,19 @@ func TestRenewCertificateRetryCompensatesMetadataSyncFailure(t *testing.T) {
 	retry, err := service.RenewCertificate(
 		context.Background(),
 		1,
-		"",
 		adminLifecycleActor(),
-		func(CertificateState, string) error {
-			executorCalls++
-			return errors.New("retry repeated Easy-RSA renewal")
-		},
 	)
 	if err != nil || !retry.AlreadyRenewed || retry.NewCertificateID == 0 {
 		t.Fatalf("renewal compensation retry = %+v, error = %v", retry, err)
 	}
-	if executorCalls != 1 {
-		t.Fatalf("renewal executor calls = %d, want 1", executorCalls)
+	if runner.renewalCount() != 1 {
+		t.Fatalf("renewal command calls = %d, want 1", runner.renewalCount())
 	}
 	assertLifecycleAuditResults(
 		t,
 		db,
 		CertificateAuditActionRenew,
-		[]string{"failed", "already_renewed"},
+		[]string{CertificateAuditResultStarted, "failed", "already_renewed"},
 	)
 }
 
@@ -913,6 +1051,81 @@ func TestHistoricalRenewedCertificateUsesRevokeRenewed(t *testing.T) {
 		1,
 	); !errors.Is(err, ErrCertificateDownloadBlocked) {
 		t.Fatalf("historical download error = %v", err)
+	}
+}
+
+func TestPerformCertificateDownloadRequiresAdministratorPermission(t *testing.T) {
+	service, db, _, _, _ := newLifecycleTestService(
+		t,
+		"valid",
+		"download-permission-client",
+		"A1",
+		"",
+	)
+	defer db.Close()
+
+	executorCalled := false
+	err := service.PerformCertificateDownload(
+		context.Background(),
+		1,
+		CertificateLifecycleActor{
+			UserID:    2,
+			SourceIP:  "192.0.2.20",
+			RequestID: "request-download-non-admin",
+		},
+		func(CertificateState) error {
+			executorCalled = true
+			return nil
+		},
+	)
+	if !errors.Is(err, ErrCertificateForbidden) {
+		t.Fatalf("download permission error = %v", err)
+	}
+	if executorCalled {
+		t.Fatal("denied download executed the configuration delivery")
+	}
+	assertLifecycleAuditResults(
+		t,
+		db,
+		auditActionDownload,
+		[]string{"failed"},
+	)
+	assertLatestAuditError(t, db, "permission_denied")
+}
+
+func TestPerformCertificateDownloadStopsWhenAuditIsUnavailable(t *testing.T) {
+	service, db, _, _, _ := newLifecycleTestService(
+		t,
+		"valid",
+		"download-audit-client",
+		"A1",
+		"",
+	)
+	defer db.Close()
+	if _, err := db.Exec(`CREATE TRIGGER reject_download_audit
+		BEFORE INSERT ON audit_logs
+		WHEN NEW.action = 'certificate.download'
+		BEGIN
+			SELECT RAISE(ABORT, 'forced download audit failure');
+		END`); err != nil {
+		t.Fatalf("create download audit failure trigger: %v", err)
+	}
+
+	executorCalled := false
+	err := service.PerformCertificateDownload(
+		context.Background(),
+		1,
+		adminLifecycleActor(),
+		func(CertificateState) error {
+			executorCalled = true
+			return nil
+		},
+	)
+	if err == nil {
+		t.Fatal("download continued while the mandatory audit log was unavailable")
+	}
+	if executorCalled {
+		t.Fatal("download delivered configuration before the audit record existed")
 	}
 }
 
@@ -968,6 +1181,12 @@ func TestDownloadDeliverySerializesConcurrentRevoke(t *testing.T) {
 	if revoke, _ := runner.commandCounts(); revoke != 1 {
 		t.Fatalf("revoke command count = %d, want 1", revoke)
 	}
+	assertLifecycleAuditResults(
+		t,
+		db,
+		auditActionDownload,
+		[]string{CertificateAuditResultStarted, "success"},
+	)
 }
 
 func TestManagementDisconnectHonorsTimeout(t *testing.T) {
@@ -1029,7 +1248,12 @@ func TestRevokeDisconnectFailureIsAuditedAsWarning(t *testing.T) {
 	if !result.DisconnectFailed {
 		t.Fatalf("disconnect warning result = %+v", result)
 	}
-	assertLifecycleAuditResults(t, db, auditActionRevoke, []string{"success_with_warning"})
+	assertLifecycleAuditResults(
+		t,
+		db,
+		auditActionRevoke,
+		[]string{CertificateAuditResultStarted, "success_with_warning"},
+	)
 	assertLatestAuditError(t, db, "disconnect_failed")
 }
 

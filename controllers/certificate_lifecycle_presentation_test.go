@@ -22,7 +22,6 @@ func TestCertificateLifecyclePageUsesPostDatabaseIDAndSessionCSRF(t *testing.T) 
 		`method="post" action="{{urlfor "CertificatesController.Restart"}}"`,
 		`method="post" action="{{urlfor "CertificatesController.Reload"}}"`,
 		`name="_csrf" value="{{$.SessionCSRFToken}}"`,
-		`name="tfa_name"`,
 		`name="confirmation"`,
 		`"CertificatesController.Download" ":id" .ID`,
 	} {
@@ -37,6 +36,7 @@ func TestCertificateLifecyclePageUsesPostDatabaseIDAndSessionCSRF(t *testing.T) 
 		`":key" .Details.Name ":localip"`,
 		`href="{{urlfor "CertificatesController.Restart"`,
 		`javascript:$.MyAPP.Restart`,
+		`name="tfa_name"`,
 	} {
 		if strings.Contains(template, prohibited) {
 			t.Fatalf("certificate template still contains legacy lifecycle route %q", prohibited)

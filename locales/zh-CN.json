@@ -222,6 +222,7 @@
   "easyrsa.view_vars": "查看 VARs",
   "error.access_denied": "拒绝访问",
   "error.admin_required": "此操作仅允许管理员执行",
+  "error.audit_unavailable": "审计日志当前不可用，操作已在变更前终止",
   "error.csrf_invalid": "CSRF 校验失败，请刷新页面后重试",
   "error.database_read": "读取数据库失败",
   "error.database_update": "更新数据库失败",

@@ -30,6 +30,7 @@ const (
 	CertificateAuditActionRenew    = "certificate.renew"
 	CertificateAuditActionRestart  = "certificate.restart"
 	CertificateAuditActionRevoke   = "certificate.revoke"
+	CertificateAuditResultStarted  = "started"
 
 	auditActionArchive       = CertificateAuditActionArchive
 	auditActionDownload      = CertificateAuditActionDownload
@@ -110,7 +111,6 @@ type RenewCertificateResult struct {
 	PreviousSerial   string
 }
 
-type CertificateRenewalExecutor func(CertificateState, string) error
 type CertificateDownloadExecutor func(CertificateState) error
 
 type lifecycleCommandRunner interface {
@@ -447,6 +447,16 @@ func (s *CertificateLifecycleService) PerformCertificateDownload(
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	if !actor.IsAdmin {
+		return s.auditFailure(
+			ctx,
+			actor,
+			auditActionDownload,
+			certificateID,
+			"permission_denied",
+			ErrCertificateForbidden,
+		)
+	}
 	state, err := s.downloadableCertificateLocked(ctx, certificateID)
 	if err != nil {
 		_ = s.recordAudit(
@@ -459,6 +469,18 @@ func (s *CertificateLifecycleService) PerformCertificateDownload(
 			"failed",
 			"download_blocked",
 		)
+		return err
+	}
+	if err := s.recordAudit(
+		ctx,
+		s.db,
+		actor,
+		auditActionDownload,
+		certificateID,
+		"certificate configuration download",
+		CertificateAuditResultStarted,
+		"",
+	); err != nil {
 		return err
 	}
 	if executor == nil {
@@ -599,9 +621,7 @@ func (s *CertificateLifecycleService) ArchiveCertificate(
 func (s *CertificateLifecycleService) RenewCertificate(
 	ctx context.Context,
 	certificateID int64,
-	tfaName string,
 	actor CertificateLifecycleActor,
-	executor CertificateRenewalExecutor,
 ) (RenewCertificateResult, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -651,7 +671,6 @@ func (s *CertificateLifecycleService) RenewCertificate(
 	}
 	if !ValidateCertificateCommonName(state.CommonName) ||
 		!ValidateCertificateSerial(state.SerialNumber) ||
-		(tfaName != "" && !ValidateCertificateCommonName(tfaName)) ||
 		s.IsProtectedCommonName(state.CommonName) {
 		return RenewCertificateResult{}, s.auditFailure(
 			ctx,
@@ -734,7 +753,7 @@ func (s *CertificateLifecycleService) RenewCertificate(
 				ErrCertificateRenewal,
 			)
 		}
-		if err := s.transferStaticIPAllocation(
+		if err := s.transferRenewedCertificateMetadata(
 			ctx,
 			certificateID,
 			newCertificateID,
@@ -744,7 +763,7 @@ func (s *CertificateLifecycleService) RenewCertificate(
 				actor,
 				CertificateAuditActionRenew,
 				certificateID,
-				"ip_allocation_transfer_failed",
+				"renewal_metadata_transfer_failed",
 				ErrCertificateRenewal,
 			)
 		}
@@ -769,17 +788,27 @@ func (s *CertificateLifecycleService) RenewCertificate(
 		}, nil
 	}
 
-	if executor == nil {
-		return RenewCertificateResult{}, s.auditFailure(
-			ctx,
-			actor,
-			CertificateAuditActionRenew,
-			certificateID,
-			"renewal_executor_missing",
-			ErrCertificateRenewal,
-		)
+	if err := s.recordAudit(
+		ctx,
+		s.db,
+		actor,
+		CertificateAuditActionRenew,
+		certificateID,
+		"certificate renewal",
+		CertificateAuditResultStarted,
+		"",
+	); err != nil {
+		return RenewCertificateResult{}, err
 	}
-	if err := executor(state, tfaName); err != nil {
+	if err := s.runEasyRSA(
+		ctx,
+		[]string{
+			"--batch",
+			"--pki-dir=" + s.pkiDir,
+			"renew",
+			state.CommonName,
+		},
+	); err != nil {
 		return RenewCertificateResult{}, s.auditFailure(
 			ctx,
 			actor,
@@ -837,7 +866,7 @@ func (s *CertificateLifecycleService) RenewCertificate(
 			ErrCertificateRenewal,
 		)
 	}
-	if err := s.transferStaticIPAllocation(
+	if err := s.transferRenewedCertificateMetadata(
 		ctx,
 		certificateID,
 		newCertificateID,
@@ -847,7 +876,7 @@ func (s *CertificateLifecycleService) RenewCertificate(
 			actor,
 			CertificateAuditActionRenew,
 			certificateID,
-			"ip_allocation_transfer_failed",
+			"renewal_metadata_transfer_failed",
 			ErrCertificateRenewal,
 		)
 	}
@@ -938,14 +967,28 @@ func (s *CertificateLifecycleService) RevokeCertificate(
 			ErrCertificatePKIMismatch,
 		)
 	}
+	if pkiRecord.Status != "revoked" &&
+		pkiRecord.Status != "valid" &&
+		pkiRecord.Status != "expired" {
+		return RevokeCertificateResult{}, s.auditFailure(
+			ctx, actor, auditActionRevoke, certificateID, "pki_invalid_state",
+			ErrCertificateInvalidState,
+		)
+	}
+	if err := s.recordAudit(
+		ctx,
+		s.db,
+		actor,
+		auditActionRevoke,
+		certificateID,
+		"certificate revocation",
+		CertificateAuditResultStarted,
+		"",
+	); err != nil {
+		return RevokeCertificateResult{}, err
+	}
 
 	if pkiRecord.Status != "revoked" {
-		if pkiRecord.Status != "valid" && pkiRecord.Status != "expired" {
-			return RevokeCertificateResult{}, s.auditFailure(
-				ctx, actor, auditActionRevoke, certificateID, "pki_invalid_state",
-				ErrCertificateInvalidState,
-			)
-		}
 		revokeCommand, err := s.resolveRevokeCommand(state)
 		if err != nil {
 			return RevokeCertificateResult{}, s.auditFailure(
@@ -990,9 +1033,19 @@ func (s *CertificateLifecycleService) RevokeCertificate(
 			ErrCertificateCRL,
 		)
 	}
-	if crlInfo, err := os.Stat(s.crlPath); err != nil || !crlInfo.Mode().IsRegular() {
+	crlInfo, err := os.Lstat(s.crlPath)
+	if err != nil || !crlInfo.Mode().IsRegular() {
 		return RevokeCertificateResult{}, s.auditFailure(
 			ctx, actor, auditActionRevoke, certificateID, "crl_verification_failed",
+			ErrCertificateCRL,
+		)
+	}
+	// Easy-RSA creates a new CRL with mode 0600 when no previous file exists.
+	// The OpenVPN server drops privileges to nobody/nogroup and must be able to
+	// read the public CRL for every new connection.
+	if err := os.Chmod(s.crlPath, 0o644); err != nil {
+		return RevokeCertificateResult{}, s.auditFailure(
+			ctx, actor, auditActionRevoke, certificateID, "crl_permission_failed",
 			ErrCertificateCRL,
 		)
 	}
@@ -1249,7 +1302,7 @@ func (s *CertificateLifecycleService) certificateIDBySerial(
 	return 0, sql.ErrNoRows
 }
 
-func (s *CertificateLifecycleService) transferStaticIPAllocation(
+func (s *CertificateLifecycleService) transferRenewedCertificateMetadata(
 	ctx context.Context,
 	previousCertificateID int64,
 	newCertificateID int64,
@@ -1257,9 +1310,65 @@ func (s *CertificateLifecycleService) transferStaticIPAllocation(
 	if previousCertificateID <= 0 ||
 		newCertificateID <= 0 ||
 		previousCertificateID == newCertificateID {
-		return errors.New("invalid certificate allocation transfer")
+		return errors.New("invalid renewed certificate metadata transfer")
 	}
-	if _, err := s.db.ExecContext(
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	result, err := tx.ExecContext(
+		ctx,
+		`UPDATE certificates
+		SET
+			vpn_user_id = (
+				SELECT vpn_user_id FROM certificates WHERE id = ?
+			),
+			permission_type = (
+				SELECT permission_type FROM certificates WHERE id = ?
+			),
+			static_ip = (
+				SELECT static_ip FROM certificates WHERE id = ?
+			),
+			validity_mode = (
+				SELECT validity_mode FROM certificates WHERE id = ?
+			),
+			business_expires_at = (
+				SELECT business_expires_at FROM certificates WHERE id = ?
+			),
+			device_note = (
+				SELECT device_note FROM certificates WHERE id = ?
+			)
+		WHERE id = ?`,
+		previousCertificateID,
+		previousCertificateID,
+		previousCertificateID,
+		previousCertificateID,
+		previousCertificateID,
+		previousCertificateID,
+		newCertificateID,
+	)
+	if err != nil {
+		return err
+	}
+	rowsAffected, err := result.RowsAffected()
+	if err != nil || rowsAffected != 1 {
+		return errors.New("renewed certificate metadata target was not updated")
+	}
+
+	if _, err := tx.ExecContext(
+		ctx,
+		`UPDATE totp_identities
+		SET certificate_id = ?
+		WHERE certificate_id = ?`,
+		newCertificateID,
+		previousCertificateID,
+	); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(
 		ctx,
 		`UPDATE ip_allocations
 		SET certificate_id = ?
@@ -1269,7 +1378,7 @@ func (s *CertificateLifecycleService) transferStaticIPAllocation(
 	); err != nil {
 		return err
 	}
-	return nil
+	return tx.Commit()
 }
 
 func (s *CertificateLifecycleService) loadPKICertificate(
@@ -1374,7 +1483,7 @@ func (s *CertificateLifecycleService) RecordCertificateOperationAudit(
 		return errors.New("invalid certificate audit action")
 	}
 	switch result {
-	case "success", "success_with_warning", "failed":
+	case CertificateAuditResultStarted, "success", "success_with_warning", "failed":
 	default:
 		return errors.New("invalid certificate audit result")
 	}

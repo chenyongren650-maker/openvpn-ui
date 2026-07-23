@@ -85,24 +85,17 @@ func TestEasyRSARevokeAndArchiveAgainstIsolatedPKI(t *testing.T) {
 	}
 	service.disconnector = &fakeLifecycleDisconnector{}
 
-	runIsolatedEasyRSA(
-		t,
-		absoluteBinary,
-		pkiDir,
-		"renew",
-		"lifecycle-test-client",
+	renewalResult, err := service.RenewCertificate(
+		context.Background(),
+		certificateID,
+		adminLifecycleActor(),
 	)
-	if _, err := service.SyncCertificateMetadata(context.Background()); err != nil {
-		t.Fatalf("synchronize renewed certificate metadata: %v", err)
+	if err != nil {
+		t.Fatalf("renew isolated Easy-RSA certificate: %v", err)
 	}
-	var renewedCertificateID int64
-	if err := db.QueryRow(`SELECT id FROM certificates
-		WHERE common_name = 'lifecycle-test-client'
-			AND status = 'valid'
-			AND id <> ?
-		ORDER BY id DESC LIMIT 1`, certificateID).
-		Scan(&renewedCertificateID); err != nil {
-		t.Fatalf("read renewed certificate database ID: %v", err)
+	renewedCertificateID := renewalResult.NewCertificateID
+	if renewedCertificateID <= 0 {
+		t.Fatalf("renewed certificate database ID = %d", renewedCertificateID)
 	}
 	if _, err := service.DownloadableCertificate(
 		context.Background(),
@@ -134,6 +127,13 @@ func TestEasyRSARevokeAndArchiveAgainstIsolatedPKI(t *testing.T) {
 	}
 	if crlAfterRevoke == crlBefore {
 		t.Fatal("isolated Easy-RSA CRL did not change after revoke")
+	}
+	crlInfo, err := os.Stat(filepath.Join(pkiDir, "crl.pem"))
+	if err != nil {
+		t.Fatalf("stat isolated Easy-RSA CRL: %v", err)
+	}
+	if permissions := crlInfo.Mode().Perm(); permissions != 0o644 {
+		t.Fatalf("isolated Easy-RSA CRL permissions = %04o, want 0644", permissions)
 	}
 	renewedState, err := service.loadCertificate(
 		context.Background(),

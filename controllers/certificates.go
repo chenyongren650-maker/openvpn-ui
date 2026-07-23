@@ -110,6 +110,9 @@ func (c *CertificatesController) Download() {
 		if errors.Is(err, services.ErrCertificateNotFound) {
 			status = http.StatusNotFound
 			key = "certificate.not_found"
+		} else if errors.Is(err, services.ErrCertificateForbidden) {
+			status = http.StatusForbidden
+			key = "error.admin_required"
 		} else if !errors.Is(err, services.ErrCertificateDownloadBlocked) &&
 			!errors.Is(err, services.ErrCertificateIdentity) {
 			status = http.StatusInternalServerError
@@ -200,12 +203,19 @@ func (c *CertificatesController) showCerts() {
 			logs.Error("ERR_CERT_CURRENT_IDENTITY")
 			currentIssued = false
 		}
+		if certificate.Details != nil {
+			certificate.Details.Name = certificateState.CommonName
+			if certificateState.StaticIP != "" {
+				certificate.Details.LocalIP = certificateState.StaticIP
+			}
+		}
 		pageRecords = append(pageRecords, &CertificatePageRecord{
 			Cert:            certificate,
 			ID:              certificateState.ID,
 			CommonName:      certificateState.CommonName,
 			LifecycleStatus: certificateState.Status,
-			DownloadAllowed: currentIssued &&
+			DownloadAllowed: c.canManageCertificates() &&
+				currentIssued &&
 				certificateState.Status == "valid" &&
 				certificate.EntryType == "V" &&
 				certificate.Revocation == "",
@@ -273,6 +283,19 @@ func (c *CertificatesController) Post() {
 		} else {
 			logs.Info("Controller: Creating certificate: Name=%s, Staticip=%s, ExpireDays=%s", cParams.Name, cParams.Staticip, cParams.ExpireDays)
 			request := certificateCreationRequest(cParams)
+			if err := c.writeCertificateOperationAudit(
+				services.CertificateAuditActionCreate,
+				cParams.Name,
+				services.CertificateAuditResultStarted,
+				"",
+			); err != nil {
+				logs.Error("ERR_CERT_AUDIT_WRITE")
+				c.renderCertificateHTTPError(
+					http.StatusServiceUnavailable,
+					"error.audit_unavailable",
+				)
+				return
+			}
 			if err := lib.CreateCertificate(request); err != nil {
 				c.recordCertificateOperationAudit(
 					services.CertificateAuditActionCreate,
@@ -396,6 +419,19 @@ func (c *CertificatesController) Restart() {
 		c.renderCertificateHTTPError(http.StatusForbidden, "error.admin_required")
 		return
 	}
+	if err := c.writeCertificateOperationAudit(
+		services.CertificateAuditActionRestart,
+		"openvpn",
+		services.CertificateAuditResultStarted,
+		"",
+	); err != nil {
+		logs.Error("ERR_CERT_AUDIT_WRITE")
+		c.renderCertificateHTTPError(
+			http.StatusServiceUnavailable,
+			"error.audit_unavailable",
+		)
+		return
+	}
 	flash := web.NewFlash()
 	if err := lib.Restart(); err != nil {
 		c.recordCertificateOperationAudit(
@@ -439,6 +475,19 @@ func (c *CertificatesController) Reload() {
 			"permission_denied",
 		)
 		c.renderCertificateHTTPError(http.StatusForbidden, "error.admin_required")
+		return
+	}
+	if err := c.writeCertificateOperationAudit(
+		services.CertificateAuditActionReload,
+		"openvpn",
+		services.CertificateAuditResultStarted,
+		"",
+	); err != nil {
+		logs.Error("ERR_CERT_AUDIT_WRITE")
+		c.renderCertificateHTTPError(
+			http.StatusServiceUnavailable,
+			"error.audit_unavailable",
+		)
 		return
 	}
 	flash := web.NewFlash()
@@ -552,20 +601,7 @@ func (c *CertificatesController) Renew() {
 		result, renewErr := c.LifecycleService.RenewCertificate(
 			c.Ctx.Request.Context(),
 			certificateID,
-			c.GetString("tfa_name"),
 			c.lifecycleActor(),
-			func(state services.CertificateState, tfaName string) error {
-				localIP := state.StaticIP
-				if localIP == "" {
-					localIP = "dynamic.pool"
-				}
-				return lib.RenewCertificate(
-					state.CommonName,
-					localIP,
-					state.SerialNumber,
-					tfaName,
-				)
-			},
 		)
 		if renewErr != nil {
 			logs.Error("ERR_CERT_RENEW")
@@ -662,12 +698,7 @@ func (c *CertificatesController) recordCertificateOperationAudit(
 	result string,
 	errorSummary string,
 ) {
-	if c.LifecycleService == nil {
-		return
-	}
-	if err := c.LifecycleService.RecordCertificateOperationAudit(
-		c.Ctx.Request.Context(),
-		c.lifecycleActor(),
+	if err := c.writeCertificateOperationAudit(
 		action,
 		targetID,
 		result,
@@ -675,6 +706,25 @@ func (c *CertificatesController) recordCertificateOperationAudit(
 	); err != nil {
 		logs.Error("ERR_CERT_AUDIT_WRITE")
 	}
+}
+
+func (c *CertificatesController) writeCertificateOperationAudit(
+	action string,
+	targetID string,
+	result string,
+	errorSummary string,
+) error {
+	if c.LifecycleService == nil {
+		return errors.New("certificate lifecycle service is unavailable")
+	}
+	return c.LifecycleService.RecordCertificateOperationAudit(
+		c.Ctx.Request.Context(),
+		c.lifecycleActor(),
+		action,
+		targetID,
+		result,
+		errorSummary,
+	)
 }
 
 func (c *CertificatesController) lifecycleErrorKey(err error, fallback string) string {

@@ -113,7 +113,6 @@
                   {{ if and $.CanManageCertificates .RenewAllowed }}
                       <form method="post" action="{{urlfor "CertificatesController.Renew" ":id" .ID}}" class="d-inline">
                         <input type="hidden" name="_csrf" value="{{$.SessionCSRFToken}}">
-                        <input type="hidden" name="tfa_name" value="{{.Details.TFAName}}">
                         <button type="submit" class="btn btn-primary btn-xs" title="{{t $.Localizer "certificate.renew"}}" style="font-size: 80%;">{{t $.Localizer "certificate.renew"}}</button>
                       </form>
                   {{else}}

@@ -20,7 +20,6 @@ const (
 	certificateScriptsDir = "/opt/scripts"
 	genClientScript       = "/opt/scripts/genclient.sh"
 	restartScript         = "/opt/scripts/restart.sh"
-	renewScript           = "/opt/scripts/renew.sh"
 )
 
 var safeCertificateNamePattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._@-]{0,127}$`)
@@ -209,18 +208,6 @@ func Restart() error {
 	return nil
 }
 
-func RenewCertificate(name string, localip string, serial string, tfaname string) error {
-	command, err := buildRenewCertificateCommand(name, localip, serial, tfaname)
-	if err != nil {
-		return err
-	}
-	if err := runCertificateScript(command); err != nil {
-		logs.Error("ERR_CERT_RENEW_COMMAND")
-		return errors.New("renew certificate")
-	}
-	return nil
-}
-
 func buildCreateCertificateCommand(
 	request CertificateCreationRequest,
 ) (certificateScriptCommand, error) {
@@ -271,32 +258,6 @@ func ValidateCertificateCreationRequest(request CertificateCreationRequest) erro
 	return err
 }
 
-func buildRenewCertificateCommand(
-	name string,
-	localIP string,
-	serial string,
-	tfaName string,
-) (certificateScriptCommand, error) {
-	if !validPortableCertificateName(name) ||
-		!validCertificateSerial(serial) ||
-		!validOptionalPortableCertificateName(tfaName) ||
-		(localIP != "dynamic.pool" && !validOptionalIPv4(localIP)) {
-		return certificateScriptCommand{}, ErrInvalidCertificateInput
-	}
-	if localIP == "" {
-		localIP = "dynamic.pool"
-	}
-	return certificateScriptCommand{
-		binary:     renewScript,
-		args:       []string{name, localIP, strings.ToUpper(serial)},
-		workingDir: certificateScriptsDir,
-		environment: []string{
-			"KEY_NAME=" + name,
-			"TFA_NAME=" + tfaName,
-		},
-	}, nil
-}
-
 func runCertificateScript(command certificateScriptCommand) error {
 	if command.binary == "" || command.workingDir != certificateScriptsDir {
 		return ErrInvalidCertificateInput
@@ -316,18 +277,6 @@ func validPortableCertificateName(value string) bool {
 
 func validOptionalPortableCertificateName(value string) bool {
 	return value == "" || validPortableCertificateName(value)
-}
-
-func validCertificateSerial(value string) bool {
-	if len(value) == 0 || len(value) > 128 {
-		return false
-	}
-	for _, character := range value {
-		if !strings.ContainsRune("0123456789abcdefABCDEF", character) {
-			return false
-		}
-	}
-	return true
 }
 
 func validOptionalIPv4(value string) bool {

@@ -37,22 +37,6 @@ func TestCertificateCommandsUseArgumentArraysWithoutShell(t *testing.T) {
 		t.Fatal("create command did not preserve safe argument boundaries")
 	}
 
-	renewCommand, err := buildRenewCertificateCommand(
-		"safe-client-01",
-		"10.9.5.10",
-		"0A12",
-		"user@example.invalid",
-	)
-	if err != nil {
-		t.Fatalf("build safe renewal command: %v", err)
-	}
-	assertCertificateCommandIsShellFree(t, renewCommand)
-	if !reflect.DeepEqual(
-		renewCommand.args,
-		[]string{"safe-client-01", "10.9.5.10", "0A12"},
-	) {
-		t.Fatalf("renew command arguments = %v", renewCommand.args)
-	}
 }
 
 func TestCertificateCreationRejectsCommandAndPathInjection(t *testing.T) {

@@ -360,7 +360,10 @@ func importCertificateMetadata(
 					WHEN certificates.archived_at IS NOT NULL THEN certificates.status
 					ELSE excluded.status
 				END,
-				static_ip = excluded.static_ip,
+					static_ip = COALESCE(
+						excluded.static_ip,
+						certificates.static_ip
+					),
 				technical_expires_at = excluded.technical_expires_at,
 				revoked_at = excluded.revoked_at
 			WHERE certificates.common_name IS NOT excluded.common_name
@@ -368,7 +371,10 @@ func importCertificateMetadata(
 					certificates.archived_at IS NULL
 					AND certificates.status IS NOT excluded.status
 				)
-				OR certificates.static_ip IS NOT excluded.static_ip
+					OR (
+						excluded.static_ip IS NOT NULL
+						AND certificates.static_ip IS NOT excluded.static_ip
+					)
 				OR certificates.technical_expires_at IS NOT excluded.technical_expires_at
 				OR certificates.revoked_at IS NOT excluded.revoked_at`,
 			record.CommonName,
