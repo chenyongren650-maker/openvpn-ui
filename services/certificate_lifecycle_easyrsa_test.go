@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"database/sql"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -84,6 +85,38 @@ func TestEasyRSARevokeAndArchiveAgainstIsolatedPKI(t *testing.T) {
 	}
 	service.disconnector = &fakeLifecycleDisconnector{}
 
+	runIsolatedEasyRSA(
+		t,
+		absoluteBinary,
+		pkiDir,
+		"renew",
+		"lifecycle-test-client",
+	)
+	if _, err := service.SyncCertificateMetadata(context.Background()); err != nil {
+		t.Fatalf("synchronize renewed certificate metadata: %v", err)
+	}
+	var renewedCertificateID int64
+	if err := db.QueryRow(`SELECT id FROM certificates
+		WHERE common_name = 'lifecycle-test-client'
+			AND status = 'valid'
+			AND id <> ?
+		ORDER BY id DESC LIMIT 1`, certificateID).
+		Scan(&renewedCertificateID); err != nil {
+		t.Fatalf("read renewed certificate database ID: %v", err)
+	}
+	if _, err := service.DownloadableCertificate(
+		context.Background(),
+		certificateID,
+	); !errors.Is(err, ErrCertificateDownloadBlocked) {
+		t.Fatalf("historical renewed certificate download error = %v", err)
+	}
+	if _, err := service.DownloadableCertificate(
+		context.Background(),
+		renewedCertificateID,
+	); err != nil {
+		t.Fatalf("current renewed certificate is not downloadable: %v", err)
+	}
+
 	indexBefore := hashTestFile(t, filepath.Join(pkiDir, "index.txt"))
 	crlBefore := hashTestFile(t, filepath.Join(pkiDir, "crl.pem"))
 	if _, err := service.RevokeCertificate(
@@ -101,6 +134,23 @@ func TestEasyRSARevokeAndArchiveAgainstIsolatedPKI(t *testing.T) {
 	}
 	if crlAfterRevoke == crlBefore {
 		t.Fatal("isolated Easy-RSA CRL did not change after revoke")
+	}
+	renewedState, err := service.loadCertificate(
+		context.Background(),
+		renewedCertificateID,
+	)
+	if err != nil {
+		t.Fatalf("read current database state after historical revoke: %v", err)
+	}
+	currentRecord, err := service.loadPKICertificate(renewedState.SerialNumber)
+	if err != nil {
+		t.Fatalf("read current PKI certificate after historical revoke: %v", err)
+	}
+	if currentRecord.Status != "valid" {
+		t.Fatalf(
+			"historical revoke changed current renewed certificate status to %q",
+			currentRecord.Status,
+		)
 	}
 
 	pkiBeforeArchive := snapshotTestPKI(t, pkiDir)

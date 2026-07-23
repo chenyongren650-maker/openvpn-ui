@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
-	"net"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -51,6 +50,7 @@ type CertificatePageRecord struct {
 	CommonName      string
 	LifecycleStatus string
 	DownloadAllowed bool
+	RenewAllowed    bool
 	Protected       bool
 }
 
@@ -72,88 +72,51 @@ func (c *CertificatesController) Download() {
 		c.renderCertificateHTTPError(http.StatusNotFound, "certificate.not_found")
 		return
 	}
-	certificateState, err := c.LifecycleService.DownloadableCertificate(
+	responseStarted := false
+	err = c.LifecycleService.PerformCertificateDownload(
 		c.Ctx.Request.Context(),
 		certificateID,
+		c.lifecycleActor(),
+		func(certificateState services.CertificateState) error {
+			name := certificateState.CommonName
+			filename := fmt.Sprintf("%s.ovpn", name)
+			keysPath := filepath.Join(state.GlobalCfg.OVConfigPath, "pki", "issued")
+
+			cfgPath, err := c.saveClientConfig(keysPath, name)
+			if err != nil {
+				return err
+			}
+			data, err := os.ReadFile(cfgPath)
+			if err != nil {
+				return err
+			}
+			c.Ctx.Output.Header("Content-Type", "application/octet-stream")
+			c.Ctx.Output.Header(
+				"Content-Disposition",
+				fmt.Sprintf("attachment; filename=\"%s\"", filename),
+			)
+			responseStarted = true
+			_, err = c.Controller.Ctx.ResponseWriter.Write(data)
+			return err
+		},
 	)
 	if err != nil {
-		_ = c.LifecycleService.RecordCertificateDownloadAudit(
-			c.Ctx.Request.Context(),
-			certificateID,
-			c.lifecycleActor(),
-			"failed",
-			"download_blocked",
-		)
+		if responseStarted {
+			logs.Error("ERR_CERT_DOWNLOAD_WRITE")
+			return
+		}
 		status := http.StatusConflict
 		key := "certificate.download_blocked"
 		if errors.Is(err, services.ErrCertificateNotFound) {
 			status = http.StatusNotFound
 			key = "certificate.not_found"
+		} else if !errors.Is(err, services.ErrCertificateDownloadBlocked) &&
+			!errors.Is(err, services.ErrCertificateIdentity) {
+			status = http.StatusInternalServerError
+			key = "certificate.download_failed"
 		}
+		logs.Error("ERR_CERT_DOWNLOAD")
 		c.renderCertificateHTTPError(status, key)
-		return
-	}
-
-	name := certificateState.CommonName
-	filename := fmt.Sprintf("%s.ovpn", name)
-
-	keysPath := filepath.Join(state.GlobalCfg.OVConfigPath, "pki/issued")
-
-	cfgPath, err := c.saveClientConfig(keysPath, name)
-	if err != nil {
-		_ = c.LifecycleService.RecordCertificateDownloadAudit(
-			c.Ctx.Request.Context(),
-			certificateID,
-			c.lifecycleActor(),
-			"failed",
-			"configuration_build_failed",
-		)
-		logs.Error("ERR_CERT_DOWNLOAD_BUILD")
-		c.renderCertificateHTTPError(http.StatusInternalServerError, "certificate.download_failed")
-		return
-	}
-	data, err := os.ReadFile(cfgPath)
-	if err != nil {
-		_ = c.LifecycleService.RecordCertificateDownloadAudit(
-			c.Ctx.Request.Context(),
-			certificateID,
-			c.lifecycleActor(),
-			"failed",
-			"configuration_read_failed",
-		)
-		logs.Error("ERR_CERT_DOWNLOAD_READ")
-		c.renderCertificateHTTPError(http.StatusInternalServerError, "certificate.download_failed")
-		return
-	}
-	if _, err := c.LifecycleService.DownloadableCertificate(
-		c.Ctx.Request.Context(),
-		certificateID,
-	); err != nil {
-		_ = c.LifecycleService.RecordCertificateDownloadAudit(
-			c.Ctx.Request.Context(),
-			certificateID,
-			c.lifecycleActor(),
-			"failed",
-			"download_blocked_after_generation",
-		)
-		c.renderCertificateHTTPError(http.StatusConflict, "certificate.download_blocked")
-		return
-	}
-	if err := c.LifecycleService.RecordCertificateDownloadAudit(
-		c.Ctx.Request.Context(),
-		certificateID,
-		c.lifecycleActor(),
-		"success",
-		"",
-	); err != nil {
-		logs.Error("ERR_CERT_DOWNLOAD_AUDIT")
-		c.renderCertificateHTTPError(http.StatusInternalServerError, "certificate.download_failed")
-		return
-	}
-	c.Ctx.Output.Header("Content-Type", "application/octet-stream")
-	c.Ctx.Output.Header("Content-Disposition", fmt.Sprintf("attachment; filename=\"%s\"", filename))
-	if _, err = c.Controller.Ctx.ResponseWriter.Write(data); err != nil {
-		logs.Error("ERR_CERT_DOWNLOAD_WRITE")
 	}
 }
 
@@ -229,13 +192,26 @@ func (c *CertificatesController) showCerts() {
 		if !exists || certificateState.Protected {
 			continue
 		}
+		currentIssued, err := c.LifecycleService.IsCurrentIssuedCertificate(
+			c.Ctx.Request.Context(),
+			certificateState.ID,
+		)
+		if err != nil {
+			logs.Error("ERR_CERT_CURRENT_IDENTITY")
+			currentIssued = false
+		}
 		pageRecords = append(pageRecords, &CertificatePageRecord{
 			Cert:            certificate,
 			ID:              certificateState.ID,
 			CommonName:      certificateState.CommonName,
 			LifecycleStatus: certificateState.Status,
-			DownloadAllowed: certificateState.Status == "valid" &&
+			DownloadAllowed: currentIssued &&
+				certificateState.Status == "valid" &&
 				certificate.EntryType == "V" &&
+				certificate.Revocation == "",
+			RenewAllowed: currentIssued &&
+				(certificateState.Status == "valid" ||
+					certificateState.Status == "expired") &&
 				certificate.Revocation == "",
 			Protected: certificateState.Protected,
 		})
@@ -252,10 +228,22 @@ func (c *CertificatesController) showCerts() {
 // @router /certificates [post]
 func (c *CertificatesController) Post() {
 	if !c.ValidSessionCSRF() {
+		c.recordCertificateOperationAudit(
+			services.CertificateAuditActionCreate,
+			"",
+			"failed",
+			"csrf_invalid",
+		)
 		c.renderCertificateHTTPError(http.StatusForbidden, "error.csrf_invalid")
 		return
 	}
 	if !c.canManageCertificates() {
+		c.recordCertificateOperationAudit(
+			services.CertificateAuditActionCreate,
+			"",
+			"failed",
+			"permission_denied",
+		)
 		c.renderCertificateHTTPError(http.StatusForbidden, "error.admin_required")
 		return
 	}
@@ -264,28 +252,57 @@ func (c *CertificatesController) Post() {
 
 	cParams := NewCertParams{}
 	if err := c.ParseForm(&cParams); err != nil {
+		c.recordCertificateOperationAudit(
+			services.CertificateAuditActionCreate,
+			"",
+			"failed",
+			"form_parse_failed",
+		)
 		logs.Error("ERR_CERT_FORM")
 		c.FlashError(flash, "error.form_parse", "ERR_CERT_FORM", err, false)
 		flash.Store(&c.Controller)
 	} else {
 		if vMap := validateCertParams(cParams, c.Localizer); vMap != nil {
+			c.recordCertificateOperationAudit(
+				services.CertificateAuditActionCreate,
+				cParams.Name,
+				"failed",
+				"invalid_input",
+			)
 			c.Data["validation"] = vMap
 		} else {
 			logs.Info("Controller: Creating certificate: Name=%s, Staticip=%s, ExpireDays=%s", cParams.Name, cParams.Staticip, cParams.ExpireDays)
-			if err := lib.CreateCertificate(cParams.Name, cParams.Staticip, cParams.Passphrase, cParams.ExpireDays, cParams.Email, cParams.Country, cParams.Province, strconv.Quote(cParams.City), strconv.Quote(cParams.Org), strconv.Quote(cParams.OrgUnit), cParams.TFAName, cParams.TFAIssuer); err != nil {
+			request := certificateCreationRequest(cParams)
+			if err := lib.CreateCertificate(request); err != nil {
+				c.recordCertificateOperationAudit(
+					services.CertificateAuditActionCreate,
+					cParams.Name,
+					"failed",
+					"creation_failed",
+				)
 				logs.Error("ERR_CERT_CREATE")
 				c.FlashError(flash, "certificate.create_failed", "ERR_CERT_CREATE", err, false)
 				flash.Store(&c.Controller)
 			} else {
 				c.FlashSuccess(flash, "certificate.created", cParams.Name)
+				auditResult := "success"
+				auditError := ""
 				if c.LifecycleService == nil {
 					c.FlashWarning(flash, "certificate.metadata_sync_failed")
 				} else if _, err := c.LifecycleService.SyncCertificateMetadata(
 					c.Ctx.Request.Context(),
 				); err != nil {
+					auditResult = "success_with_warning"
+					auditError = "metadata_sync_failed"
 					logs.Error("ERR_CERT_METADATA_SYNC")
 					c.FlashWarning(flash, "certificate.metadata_sync_failed")
 				}
+				c.recordCertificateOperationAudit(
+					services.CertificateAuditActionCreate,
+					cParams.Name,
+					auditResult,
+					auditError,
+				)
 				flash.Store(&c.Controller)
 			}
 		}
@@ -301,12 +318,24 @@ func (c *CertificatesController) Post() {
 // @router /certificates/:id/revoke [post]
 func (c *CertificatesController) Revoke() {
 	if !c.ValidSessionCSRF() {
+		c.recordCertificateOperationAudit(
+			services.CertificateAuditActionRevoke,
+			c.GetString(":id"),
+			"failed",
+			"csrf_invalid",
+		)
 		c.renderCertificateHTTPError(http.StatusForbidden, "error.csrf_invalid")
 		return
 	}
 	flash := web.NewFlash()
 	certificateID, err := c.certificateID()
 	if err != nil || c.LifecycleService == nil {
+		c.recordCertificateOperationAudit(
+			services.CertificateAuditActionRevoke,
+			c.GetString(":id"),
+			"failed",
+			"invalid_target",
+		)
 		c.FlashError(
 			flash,
 			"certificate.not_found",
@@ -348,18 +377,42 @@ func (c *CertificatesController) Revoke() {
 // @router /certificates/restart [post]
 func (c *CertificatesController) Restart() {
 	if !c.ValidSessionCSRF() {
+		c.recordCertificateOperationAudit(
+			services.CertificateAuditActionRestart,
+			"openvpn",
+			"failed",
+			"csrf_invalid",
+		)
 		c.renderCertificateHTTPError(http.StatusForbidden, "error.csrf_invalid")
 		return
 	}
 	if !c.canManageCertificates() {
+		c.recordCertificateOperationAudit(
+			services.CertificateAuditActionRestart,
+			"openvpn",
+			"failed",
+			"permission_denied",
+		)
 		c.renderCertificateHTTPError(http.StatusForbidden, "error.admin_required")
 		return
 	}
 	flash := web.NewFlash()
 	if err := lib.Restart(); err != nil {
+		c.recordCertificateOperationAudit(
+			services.CertificateAuditActionRestart,
+			"openvpn",
+			"failed",
+			"restart_failed",
+		)
 		logs.Error("ERR_OPENVPN_RESTART")
 		c.FlashError(flash, "maintenance.restart_failed", "ERR_OPENVPN_RESTART", err, false)
 	} else {
+		c.recordCertificateOperationAudit(
+			services.CertificateAuditActionRestart,
+			"openvpn",
+			"success",
+			"",
+		)
 		c.FlashSuccess(flash, "maintenance.restarted", "OpenVPN")
 	}
 	flash.Store(&c.Controller)
@@ -369,19 +422,43 @@ func (c *CertificatesController) Restart() {
 // @router /certificates/reload [post]
 func (c *CertificatesController) Reload() {
 	if !c.ValidSessionCSRF() {
+		c.recordCertificateOperationAudit(
+			services.CertificateAuditActionReload,
+			"openvpn",
+			"failed",
+			"csrf_invalid",
+		)
 		c.renderCertificateHTTPError(http.StatusForbidden, "error.csrf_invalid")
 		return
 	}
 	if !c.canManageCertificates() {
+		c.recordCertificateOperationAudit(
+			services.CertificateAuditActionReload,
+			"openvpn",
+			"failed",
+			"permission_denied",
+		)
 		c.renderCertificateHTTPError(http.StatusForbidden, "error.admin_required")
 		return
 	}
 	flash := web.NewFlash()
 	client := mi.NewClient(state.GlobalCfg.MINetwork, state.GlobalCfg.MIAddress)
 	if err := client.Signal("SIGUSR1"); err != nil {
+		c.recordCertificateOperationAudit(
+			services.CertificateAuditActionReload,
+			"openvpn",
+			"failed",
+			"reload_failed",
+		)
 		logs.Error("ERR_OPENVPN_RELOAD")
 		c.FlashError(flash, "maintenance.restart_failed", "ERR_OPENVPN_RELOAD", err, false)
 	} else {
+		c.recordCertificateOperationAudit(
+			services.CertificateAuditActionReload,
+			"openvpn",
+			"success",
+			"",
+		)
 		c.FlashSuccess(flash, "maintenance.restarted", "OpenVPN")
 	}
 	flash.Store(&c.Controller)
@@ -391,12 +468,24 @@ func (c *CertificatesController) Reload() {
 // @router /certificates/:id/archive [post]
 func (c *CertificatesController) Archive() {
 	if !c.ValidSessionCSRF() {
+		c.recordCertificateOperationAudit(
+			services.CertificateAuditActionArchive,
+			c.GetString(":id"),
+			"failed",
+			"csrf_invalid",
+		)
 		c.renderCertificateHTTPError(http.StatusForbidden, "error.csrf_invalid")
 		return
 	}
 	flash := web.NewFlash()
 	certificateID, err := c.certificateID()
 	if err != nil || c.LifecycleService == nil {
+		c.recordCertificateOperationAudit(
+			services.CertificateAuditActionArchive,
+			c.GetString(":id"),
+			"failed",
+			"invalid_target",
+		)
 		c.FlashError(
 			flash,
 			"certificate.not_found",
@@ -431,35 +520,77 @@ func (c *CertificatesController) Archive() {
 	c.Redirect(c.URLFor("CertificatesController.Get"), http.StatusSeeOther)
 }
 
-// @router /certificates/renew/:key/:localip/:serial/:tfaname [post]
+// @router /certificates/:id/renew [post]
 func (c *CertificatesController) Renew() {
 	if !c.ValidSessionCSRF() {
+		c.recordCertificateOperationAudit(
+			services.CertificateAuditActionRenew,
+			c.GetString(":id"),
+			"failed",
+			"csrf_invalid",
+		)
 		c.renderCertificateHTTPError(http.StatusForbidden, "error.csrf_invalid")
 		return
 	}
-	if !c.canManageCertificates() {
-		c.renderCertificateHTTPError(http.StatusForbidden, "error.admin_required")
-		return
-	}
 	flash := web.NewFlash()
-	name := c.GetString(":key")
-	localip := c.GetString(":localip")
-	serial := c.GetString(":serial")
-	tfaname := c.GetString(":tfaname")
-	if !validRenewalParameters(name, localip, serial, tfaname) {
-		logs.Error("ERR_CERT_RENEW_IDENTITY")
+	certificateID, err := c.certificateID()
+	if err != nil || c.LifecycleService == nil {
+		c.recordCertificateOperationAudit(
+			services.CertificateAuditActionRenew,
+			c.GetString(":id"),
+			"failed",
+			"invalid_target",
+		)
 		c.FlashError(
 			flash,
-			"certificate.identity_invalid",
-			"ERR_CERT_RENEW_IDENTITY",
-			services.ErrCertificateIdentity,
+			"certificate.not_found",
+			"ERR_CERT_NOT_FOUND",
+			services.ErrCertificateNotFound,
 			false,
 		)
-	} else if err := lib.RenewCertificate(name, localip, serial, tfaname); err != nil {
-		logs.Error("ERR_CERT_RENEW")
-		c.FlashError(flash, "certificate.renew_failed", "ERR_CERT_RENEW", err, false)
 	} else {
-		c.FlashSuccess(flash, "certificate.renewed", name, localip, serial)
+		result, renewErr := c.LifecycleService.RenewCertificate(
+			c.Ctx.Request.Context(),
+			certificateID,
+			c.GetString("tfa_name"),
+			c.lifecycleActor(),
+			func(state services.CertificateState, tfaName string) error {
+				localIP := state.StaticIP
+				if localIP == "" {
+					localIP = "dynamic.pool"
+				}
+				return lib.RenewCertificate(
+					state.CommonName,
+					localIP,
+					state.SerialNumber,
+					tfaName,
+				)
+			},
+		)
+		if renewErr != nil {
+			logs.Error("ERR_CERT_RENEW")
+			c.FlashError(
+				flash,
+				c.lifecycleErrorKey(renewErr, "certificate.renew_failed"),
+				"ERR_CERT_RENEW",
+				renewErr,
+				false,
+			)
+		} else if result.AlreadyRenewed {
+			c.FlashWarning(flash, "certificate.already_renewed")
+		} else {
+			localIP := result.StaticIP
+			if localIP == "" {
+				localIP = "dynamic.pool"
+			}
+			c.FlashSuccess(
+				flash,
+				"certificate.renewed",
+				result.CommonName,
+				localIP,
+				result.PreviousSerial,
+			)
+		}
 	}
 	flash.Store(&c.Controller)
 	c.Redirect(c.URLFor("CertificatesController.Get"), http.StatusSeeOther)
@@ -475,7 +606,30 @@ func validateCertParams(cert NewCertParams, localizer *i18n.Localizer) map[strin
 	if !b {
 		return lib.CreateValidationMap(valid, localizer)
 	}
+	if err := lib.ValidateCertificateCreationRequest(
+		certificateCreationRequest(cert),
+	); err != nil {
+		valid.SetError("Name", "invalid certificate input")
+		return lib.CreateValidationMap(valid, localizer)
+	}
 	return nil
+}
+
+func certificateCreationRequest(cert NewCertParams) lib.CertificateCreationRequest {
+	return lib.CertificateCreationRequest{
+		Name:       cert.Name,
+		StaticIP:   cert.Staticip,
+		Passphrase: cert.Passphrase,
+		ExpireDays: cert.ExpireDays,
+		Email:      cert.Email,
+		Country:    cert.Country,
+		Province:   cert.Province,
+		City:       cert.City,
+		Org:        cert.Org,
+		OrgUnit:    cert.OrgUnit,
+		TFAName:    cert.TFAName,
+		TFAIssuer:  cert.TFAIssuer,
+	}
 }
 
 func (c *CertificatesController) certificateID() (int64, error) {
@@ -490,17 +644,6 @@ func (c *CertificatesController) canManageCertificates() bool {
 	return c.Userinfo != nil && c.Userinfo.IsAdmin
 }
 
-func validRenewalParameters(name, localIP, serial, tfaName string) bool {
-	if !services.ValidateCertificateCommonName(name) ||
-		!services.ValidateCertificateSerial(serial) {
-		return false
-	}
-	if localIP != "" && localIP != "dynamic.pool" && net.ParseIP(localIP) == nil {
-		return false
-	}
-	return tfaName == "" || services.ValidateCertificateCommonName(tfaName)
-}
-
 func (c *CertificatesController) lifecycleActor() services.CertificateLifecycleActor {
 	actor := services.CertificateLifecycleActor{
 		SourceIP:  c.Ctx.Input.IP(),
@@ -511,6 +654,27 @@ func (c *CertificatesController) lifecycleActor() services.CertificateLifecycleA
 		actor.IsAdmin = c.Userinfo.IsAdmin
 	}
 	return actor
+}
+
+func (c *CertificatesController) recordCertificateOperationAudit(
+	action string,
+	targetID string,
+	result string,
+	errorSummary string,
+) {
+	if c.LifecycleService == nil {
+		return
+	}
+	if err := c.LifecycleService.RecordCertificateOperationAudit(
+		c.Ctx.Request.Context(),
+		c.lifecycleActor(),
+		action,
+		targetID,
+		result,
+		errorSummary,
+	); err != nil {
+		logs.Error("ERR_CERT_AUDIT_WRITE")
+	}
 }
 
 func (c *CertificatesController) lifecycleErrorKey(err error, fallback string) string {

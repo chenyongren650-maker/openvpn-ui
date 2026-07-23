@@ -87,6 +87,7 @@
   "certificate.remove_failed": "删除证书记录失败",
   "certificate.removed": "证书“%s”（序列号 %s）已删除",
   "certificate.renew": "续期",
+  "certificate.already_renewed": "该证书已经续期，数据库元数据已重新同步",
   "certificate.renew_failed": "证书续期失败",
   "certificate.renewed": "证书“%s”已续期，静态 IP：%s，序列号：%s",
   "certificate.revocation": "吊销",

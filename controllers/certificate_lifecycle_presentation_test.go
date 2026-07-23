@@ -18,10 +18,11 @@ func TestCertificateLifecyclePageUsesPostDatabaseIDAndSessionCSRF(t *testing.T) 
 	for _, required := range []string{
 		`method="post" action="{{urlfor "CertificatesController.Revoke" ":id" .ID}}"`,
 		`method="post" action="{{urlfor "CertificatesController.Archive" ":id" .ID}}"`,
-		`method="post" action="{{urlfor "CertificatesController.Renew"`,
+		`method="post" action="{{urlfor "CertificatesController.Renew" ":id" .ID}}"`,
 		`method="post" action="{{urlfor "CertificatesController.Restart"}}"`,
 		`method="post" action="{{urlfor "CertificatesController.Reload"}}"`,
 		`name="_csrf" value="{{$.SessionCSRFToken}}"`,
+		`name="tfa_name"`,
 		`name="confirmation"`,
 		`"CertificatesController.Download" ":id" .ID`,
 	} {
@@ -33,6 +34,7 @@ func TestCertificateLifecyclePageUsesPostDatabaseIDAndSessionCSRF(t *testing.T) 
 		"CertificatesController.Burn",
 		`href="{{urlfor "CertificatesController.Revoke"`,
 		`href="{{urlfor "CertificatesController.Renew"`,
+		`":key" .Details.Name ":localip"`,
 		`href="{{urlfor "CertificatesController.Restart"`,
 		`javascript:$.MyAPP.Restart`,
 	} {
@@ -51,6 +53,7 @@ func TestCertificateLifecycleRoutesUsePostAndStableDatabaseID(t *testing.T) {
 	for _, required := range []string{
 		"Router:           `/certificates/:id/revoke`",
 		"Router:           `/certificates/:id/archive`",
+		"Router:           `/certificates/:id/renew`",
 		`AllowHTTPMethods: []string{"post"}`,
 		"Router:           `/certificates/:id/download`",
 	} {
@@ -61,6 +64,7 @@ func TestCertificateLifecycleRoutesUsePostAndStableDatabaseID(t *testing.T) {
 	for _, prohibited := range []string{
 		"/certificates/burn/",
 		"/certificates/revoke/:key",
+		"/certificates/renew/:key",
 	} {
 		if strings.Contains(routes, prohibited) {
 			t.Fatalf("generated routes still contain legacy path %q", prohibited)
@@ -75,44 +79,11 @@ func TestCertificateLifecycleRoutesUsePostAndStableDatabaseID(t *testing.T) {
 	for _, prohibited := range []string{
 		"@router /certificates/restart [get]",
 		"@router /certificates/reload [get]",
-		"@router /certificates/renew/:key/:localip/:serial/:tfaname [get]",
+		"@router /certificates/:id/renew [get]",
+		"@router /certificates/renew/:key/:localip/:serial/:tfaname",
 	} {
 		if strings.Contains(controller, prohibited) {
 			t.Fatalf("certificate controller still contains GET write route %q", prohibited)
-		}
-	}
-}
-
-func TestRenewalParametersRejectCommandAndPathInjection(t *testing.T) {
-	for _, testCase := range []struct {
-		name    string
-		localIP string
-		serial  string
-		tfaName string
-		valid   bool
-	}{
-		{name: "client-01", localIP: "dynamic.pool", serial: "0A12", tfaName: "user@example.invalid", valid: true},
-		{name: "client-01", localIP: "10.9.5.10", serial: "0A12", valid: true},
-		{name: "../client", localIP: "10.9.5.10", serial: "0A12", valid: false},
-		{name: "client;touch", localIP: "10.9.5.10", serial: "0A12", valid: false},
-		{name: "client-01", localIP: "10.9.5.10;id", serial: "0A12", valid: false},
-		{name: "client-01", localIP: "10.9.5.10", serial: "0A12;id", valid: false},
-		{name: "client-01", localIP: "10.9.5.10", serial: "0A12", tfaName: "user;id", valid: false},
-	} {
-		if got := validRenewalParameters(
-			testCase.name,
-			testCase.localIP,
-			testCase.serial,
-			testCase.tfaName,
-		); got != testCase.valid {
-			t.Fatalf("validRenewalParameters(%q, %q, %q, %q) = %t, want %t",
-				testCase.name,
-				testCase.localIP,
-				testCase.serial,
-				testCase.tfaName,
-				got,
-				testCase.valid,
-			)
 		}
 	}
 }

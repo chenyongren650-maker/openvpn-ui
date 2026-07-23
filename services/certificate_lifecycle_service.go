@@ -1,9 +1,12 @@
 package services
 
 import (
+	"bufio"
 	"context"
 	"crypto/subtle"
+	"crypto/x509"
 	"database/sql"
+	"encoding/pem"
 	"errors"
 	"fmt"
 	"net"
@@ -20,10 +23,19 @@ import (
 )
 
 const (
-	auditActionArchive  = "certificate.archive"
-	auditActionDownload = "certificate.download"
-	auditActionRevoke   = "certificate.revoke"
-	auditTargetType     = "certificate"
+	CertificateAuditActionArchive  = "certificate.archive"
+	CertificateAuditActionCreate   = "certificate.create"
+	CertificateAuditActionDownload = "certificate.download"
+	CertificateAuditActionReload   = "certificate.reload"
+	CertificateAuditActionRenew    = "certificate.renew"
+	CertificateAuditActionRestart  = "certificate.restart"
+	CertificateAuditActionRevoke   = "certificate.revoke"
+
+	auditActionArchive       = CertificateAuditActionArchive
+	auditActionDownload      = CertificateAuditActionDownload
+	auditActionRevoke        = CertificateAuditActionRevoke
+	auditTargetType          = "certificate"
+	defaultManagementTimeout = 5 * time.Second
 )
 
 var (
@@ -36,12 +48,15 @@ var (
 	ErrCertificateCommand         = errors.New("certificate revocation command failed")
 	ErrCertificateCRL             = errors.New("certificate revocation list generation failed")
 	ErrCertificateDownloadBlocked = errors.New("certificate configuration download is blocked")
+	ErrCertificateRenewal         = errors.New("certificate renewal failed")
 )
 
 var (
 	certificateCommonNamePattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._@-]{0,127}$`)
 	certificateSerialPatternSafe = regexp.MustCompile(`^[0-9A-Fa-f]{1,128}$`)
+	auditErrorSummaryPattern     = regexp.MustCompile(`^[a-z0-9_]{1,64}$`)
 	auditRequestIDPattern        = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$`)
+	auditTargetIDPattern         = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._@:-]{0,127}$`)
 )
 
 // CertificateLifecycleActor contains only the non-sensitive request metadata
@@ -87,6 +102,17 @@ type RevokeCertificateResult struct {
 	DisconnectFailed bool
 }
 
+type RenewCertificateResult struct {
+	AlreadyRenewed   bool
+	NewCertificateID int64
+	CommonName       string
+	StaticIP         string
+	PreviousSerial   string
+}
+
+type CertificateRenewalExecutor func(CertificateState, string) error
+type CertificateDownloadExecutor func(CertificateState) error
+
 type lifecycleCommandRunner interface {
 	Run(context.Context, string, []string, string, []string) error
 }
@@ -118,32 +144,74 @@ func (osLifecycleCommandRunner) Run(
 type managementLifecycleDisconnector struct {
 	network string
 	address string
+	timeout time.Duration
 }
 
 func (d managementLifecycleDisconnector) Disconnect(
 	ctx context.Context,
 	commonName string,
 ) (bool, error) {
-	select {
-	case <-ctx.Done():
-		return false, ctx.Err()
-	default:
+	statusResponse, err := d.execute(ctx, "status 2")
+	if err != nil {
+		return false, err
 	}
-
-	client := mi.NewClient(d.network, d.address)
-	status, err := client.GetStatus()
+	status, err := mi.ParseStatus(statusResponse)
 	if err != nil {
 		return false, err
 	}
 	for _, connectedClient := range status.ClientList {
 		if connectedClient != nil && connectedClient.CommonName == commonName {
-			if _, err := client.KillSession(commonName); err != nil {
+			killResponse, err := d.execute(ctx, "kill "+commonName)
+			if err != nil {
+				return false, err
+			}
+			if _, err := mi.ParseKillSession(killResponse); err != nil {
 				return false, err
 			}
 			return true, nil
 		}
 	}
 	return false, nil
+}
+
+func (d managementLifecycleDisconnector) execute(
+	ctx context.Context,
+	command string,
+) (string, error) {
+	timeout := d.timeout
+	if timeout <= 0 {
+		timeout = defaultManagementTimeout
+	}
+	commandContext, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+
+	connection, err := (&net.Dialer{}).DialContext(
+		commandContext,
+		d.network,
+		d.address,
+	)
+	if err != nil {
+		return "", err
+	}
+	defer connection.Close()
+	if deadline, ok := commandContext.Deadline(); ok {
+		if err := connection.SetDeadline(deadline); err != nil {
+			return "", err
+		}
+	}
+	stopCancellation := context.AfterFunc(commandContext, func() {
+		_ = connection.Close()
+	})
+	defer stopCancellation()
+
+	reader := bufio.NewReader(connection)
+	if _, err := reader.ReadString('\n'); err != nil {
+		return "", err
+	}
+	if err := mi.SendCommand(connection, command); err != nil {
+		return "", err
+	}
+	return mi.ReadResponse(reader)
 }
 
 // CertificateLifecycleService owns certificate lifecycle state transitions.
@@ -206,6 +274,7 @@ func NewCertificateLifecycleService(
 		disconnector: managementLifecycleDisconnector{
 			network: config.ManagementNetwork,
 			address: config.ManagementAddress,
+			timeout: defaultManagementTimeout,
 		},
 		now: func() time.Time { return time.Now().UTC() },
 	}, nil
@@ -253,6 +322,14 @@ func (s *CertificateLifecycleService) IsProtectedCommonName(commonName string) b
 func (s *CertificateLifecycleService) SyncCertificateMetadata(
 	ctx context.Context,
 ) (CertificateImportResult, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.syncCertificateMetadataLocked(ctx)
+}
+
+func (s *CertificateLifecycleService) syncCertificateMetadataLocked(
+	ctx context.Context,
+) (CertificateImportResult, error) {
 	return ImportCertificateMetadataFile(ctx, s.db, s.indexPath)
 }
 
@@ -296,7 +373,38 @@ func (s *CertificateLifecycleService) DownloadableCertificate(
 ) (CertificateState, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	return s.downloadableCertificateLocked(ctx, certificateID)
+}
 
+func (s *CertificateLifecycleService) IsCurrentIssuedCertificate(
+	ctx context.Context,
+	certificateID int64,
+) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	state, err := s.loadCertificate(ctx, certificateID)
+	if err != nil {
+		return false, err
+	}
+	if !ValidateCertificateCommonName(state.CommonName) ||
+		!ValidateCertificateSerial(state.SerialNumber) {
+		return false, ErrCertificateIdentity
+	}
+	matches, err := s.certificateFileMatchesState(
+		filepath.Join(s.pkiDir, "issued", state.CommonName+".crt"),
+		state,
+	)
+	if errors.Is(err, os.ErrNotExist) {
+		return false, nil
+	}
+	return matches, err
+}
+
+func (s *CertificateLifecycleService) downloadableCertificateLocked(
+	ctx context.Context,
+	certificateID int64,
+) (CertificateState, error) {
 	if certificateID <= 0 {
 		return CertificateState{}, ErrCertificateNotFound
 	}
@@ -316,7 +424,71 @@ func (s *CertificateLifecycleService) DownloadableCertificate(
 		pkiRecord.Status != "valid" {
 		return CertificateState{}, ErrCertificateDownloadBlocked
 	}
+	matchesCurrent, err := s.certificateFileMatchesState(
+		filepath.Join(s.pkiDir, "issued", state.CommonName+".crt"),
+		state,
+	)
+	if err != nil || !matchesCurrent {
+		return CertificateState{}, ErrCertificateDownloadBlocked
+	}
 	return state, nil
+}
+
+// PerformCertificateDownload keeps validation, configuration generation,
+// response delivery, and audit under the lifecycle mutex. A concurrent revoke,
+// archive, or renewal therefore cannot begin after validation but before the
+// selected certificate has been delivered.
+func (s *CertificateLifecycleService) PerformCertificateDownload(
+	ctx context.Context,
+	certificateID int64,
+	actor CertificateLifecycleActor,
+	executor CertificateDownloadExecutor,
+) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	state, err := s.downloadableCertificateLocked(ctx, certificateID)
+	if err != nil {
+		_ = s.recordAudit(
+			ctx,
+			s.db,
+			actor,
+			auditActionDownload,
+			certificateID,
+			"certificate configuration download",
+			"failed",
+			"download_blocked",
+		)
+		return err
+	}
+	if executor == nil {
+		err = errors.New("certificate download executor is nil")
+	} else {
+		err = executor(state)
+	}
+	if err != nil {
+		_ = s.recordAudit(
+			ctx,
+			s.db,
+			actor,
+			auditActionDownload,
+			certificateID,
+			"certificate configuration download",
+			"failed",
+			"download_failed",
+		)
+		return err
+	}
+	return s.recordAudit(
+		ctx,
+		s.db,
+		actor,
+		auditActionDownload,
+		certificateID,
+		"certificate configuration download",
+		"success",
+		"",
+	)
 }
 
 // RecordCertificateDownloadAudit records a download outcome without storing
@@ -424,6 +596,281 @@ func (s *CertificateLifecycleService) ArchiveCertificate(
 	return ArchiveCertificateResult{}, nil
 }
 
+func (s *CertificateLifecycleService) RenewCertificate(
+	ctx context.Context,
+	certificateID int64,
+	tfaName string,
+	actor CertificateLifecycleActor,
+	executor CertificateRenewalExecutor,
+) (RenewCertificateResult, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if certificateID <= 0 {
+		return RenewCertificateResult{}, s.auditFailure(
+			ctx,
+			actor,
+			CertificateAuditActionRenew,
+			certificateID,
+			"invalid_target",
+			ErrCertificateNotFound,
+		)
+	}
+	if !actor.IsAdmin {
+		return RenewCertificateResult{}, s.auditFailure(
+			ctx,
+			actor,
+			CertificateAuditActionRenew,
+			certificateID,
+			"permission_denied",
+			ErrCertificateForbidden,
+		)
+	}
+
+	state, err := s.loadCertificate(ctx, certificateID)
+	if err != nil {
+		return RenewCertificateResult{}, s.auditFailure(
+			ctx,
+			actor,
+			CertificateAuditActionRenew,
+			certificateID,
+			"not_found",
+			err,
+		)
+	}
+	if state.ArchivedAt != nil ||
+		(state.Status != "valid" && state.Status != "expired") {
+		return RenewCertificateResult{}, s.auditFailure(
+			ctx,
+			actor,
+			CertificateAuditActionRenew,
+			certificateID,
+			"invalid_state",
+			ErrCertificateInvalidState,
+		)
+	}
+	if !ValidateCertificateCommonName(state.CommonName) ||
+		!ValidateCertificateSerial(state.SerialNumber) ||
+		(tfaName != "" && !ValidateCertificateCommonName(tfaName)) ||
+		s.IsProtectedCommonName(state.CommonName) {
+		return RenewCertificateResult{}, s.auditFailure(
+			ctx,
+			actor,
+			CertificateAuditActionRenew,
+			certificateID,
+			"invalid_identity",
+			ErrCertificateIdentity,
+		)
+	}
+
+	pkiRecord, err := s.loadPKICertificate(state.SerialNumber)
+	if err != nil || pkiRecord.CommonName != state.CommonName {
+		return RenewCertificateResult{}, s.auditFailure(
+			ctx,
+			actor,
+			CertificateAuditActionRenew,
+			certificateID,
+			"pki_identity_mismatch",
+			ErrCertificatePKIMismatch,
+		)
+	}
+	if pkiRecord.Status != "valid" && pkiRecord.Status != "expired" {
+		return RenewCertificateResult{}, s.auditFailure(
+			ctx,
+			actor,
+			CertificateAuditActionRenew,
+			certificateID,
+			"pki_invalid_state",
+			ErrCertificateInvalidState,
+		)
+	}
+
+	currentSerial, err := s.currentIssuedCertificateSerial(state.CommonName)
+	if err != nil {
+		return RenewCertificateResult{}, s.auditFailure(
+			ctx,
+			actor,
+			CertificateAuditActionRenew,
+			certificateID,
+			"issued_certificate_read_failed",
+			ErrCertificatePKIMismatch,
+		)
+	}
+	if normalizeCertificateSerial(currentSerial) !=
+		normalizeCertificateSerial(state.SerialNumber) {
+		alreadyRenewed, newCertificateID := s.completedRenewalState(
+			ctx,
+			state,
+			currentSerial,
+		)
+		if !alreadyRenewed {
+			return RenewCertificateResult{}, s.auditFailure(
+				ctx,
+				actor,
+				CertificateAuditActionRenew,
+				certificateID,
+				"issued_certificate_mismatch",
+				ErrCertificatePKIMismatch,
+			)
+		}
+		if _, err := s.syncCertificateMetadataLocked(ctx); err != nil {
+			return RenewCertificateResult{}, s.auditFailure(
+				ctx,
+				actor,
+				CertificateAuditActionRenew,
+				certificateID,
+				"metadata_sync_failed",
+				ErrCertificateRenewal,
+			)
+		}
+		newCertificateID, err = s.certificateIDBySerial(ctx, currentSerial)
+		if err != nil {
+			return RenewCertificateResult{}, s.auditFailure(
+				ctx,
+				actor,
+				CertificateAuditActionRenew,
+				certificateID,
+				"metadata_lookup_failed",
+				ErrCertificateRenewal,
+			)
+		}
+		if err := s.transferStaticIPAllocation(
+			ctx,
+			certificateID,
+			newCertificateID,
+		); err != nil {
+			return RenewCertificateResult{}, s.auditFailure(
+				ctx,
+				actor,
+				CertificateAuditActionRenew,
+				certificateID,
+				"ip_allocation_transfer_failed",
+				ErrCertificateRenewal,
+			)
+		}
+		if err := s.recordAudit(
+			ctx,
+			s.db,
+			actor,
+			CertificateAuditActionRenew,
+			certificateID,
+			"certificate renewal",
+			"already_renewed",
+			"",
+		); err != nil {
+			return RenewCertificateResult{}, err
+		}
+		return RenewCertificateResult{
+			AlreadyRenewed:   true,
+			NewCertificateID: newCertificateID,
+			CommonName:       state.CommonName,
+			StaticIP:         state.StaticIP,
+			PreviousSerial:   state.SerialNumber,
+		}, nil
+	}
+
+	if executor == nil {
+		return RenewCertificateResult{}, s.auditFailure(
+			ctx,
+			actor,
+			CertificateAuditActionRenew,
+			certificateID,
+			"renewal_executor_missing",
+			ErrCertificateRenewal,
+		)
+	}
+	if err := executor(state, tfaName); err != nil {
+		return RenewCertificateResult{}, s.auditFailure(
+			ctx,
+			actor,
+			CertificateAuditActionRenew,
+			certificateID,
+			"renewal_command_failed",
+			ErrCertificateRenewal,
+		)
+	}
+
+	newSerial, err := s.currentIssuedCertificateSerial(state.CommonName)
+	if err != nil ||
+		normalizeCertificateSerial(newSerial) ==
+			normalizeCertificateSerial(state.SerialNumber) {
+		return RenewCertificateResult{}, s.auditFailure(
+			ctx,
+			actor,
+			CertificateAuditActionRenew,
+			certificateID,
+			"renewal_verification_failed",
+			ErrCertificatePKIMismatch,
+		)
+	}
+	newRecord, err := s.loadPKICertificate(newSerial)
+	if err != nil ||
+		newRecord.CommonName != state.CommonName ||
+		newRecord.Status != "valid" {
+		return RenewCertificateResult{}, s.auditFailure(
+			ctx,
+			actor,
+			CertificateAuditActionRenew,
+			certificateID,
+			"renewal_verification_failed",
+			ErrCertificatePKIMismatch,
+		)
+	}
+	if _, err := s.syncCertificateMetadataLocked(ctx); err != nil {
+		return RenewCertificateResult{}, s.auditFailure(
+			ctx,
+			actor,
+			CertificateAuditActionRenew,
+			certificateID,
+			"metadata_sync_failed",
+			ErrCertificateRenewal,
+		)
+	}
+	newCertificateID, err := s.certificateIDBySerial(ctx, newSerial)
+	if err != nil {
+		return RenewCertificateResult{}, s.auditFailure(
+			ctx,
+			actor,
+			CertificateAuditActionRenew,
+			certificateID,
+			"metadata_lookup_failed",
+			ErrCertificateRenewal,
+		)
+	}
+	if err := s.transferStaticIPAllocation(
+		ctx,
+		certificateID,
+		newCertificateID,
+	); err != nil {
+		return RenewCertificateResult{}, s.auditFailure(
+			ctx,
+			actor,
+			CertificateAuditActionRenew,
+			certificateID,
+			"ip_allocation_transfer_failed",
+			ErrCertificateRenewal,
+		)
+	}
+	if err := s.recordAudit(
+		ctx,
+		s.db,
+		actor,
+		CertificateAuditActionRenew,
+		certificateID,
+		"certificate renewal",
+		"success",
+		"",
+	); err != nil {
+		return RenewCertificateResult{}, err
+	}
+	return RenewCertificateResult{
+		NewCertificateID: newCertificateID,
+		CommonName:       state.CommonName,
+		StaticIP:         state.StaticIP,
+		PreviousSerial:   state.SerialNumber,
+	}, nil
+}
+
 func (s *CertificateLifecycleService) RevokeCertificate(
 	ctx context.Context,
 	certificateID int64,
@@ -499,9 +946,25 @@ func (s *CertificateLifecycleService) RevokeCertificate(
 				ErrCertificateInvalidState,
 			)
 		}
+		revokeCommand, err := s.resolveRevokeCommand(state)
+		if err != nil {
+			return RevokeCertificateResult{}, s.auditFailure(
+				ctx,
+				actor,
+				auditActionRevoke,
+				certificateID,
+				"revoke_target_mismatch",
+				ErrCertificatePKIMismatch,
+			)
+		}
 		if err := s.runEasyRSA(
 			ctx,
-			[]string{"--batch", "--pki-dir=" + s.pkiDir, "revoke", state.CommonName},
+			[]string{
+				"--batch",
+				"--pki-dir=" + s.pkiDir,
+				revokeCommand,
+				state.CommonName,
+			},
 		); err != nil {
 			return RevokeCertificateResult{}, s.auditFailure(
 				ctx, actor, auditActionRevoke, certificateID, "revoke_command_failed",
@@ -574,7 +1037,32 @@ func (s *CertificateLifecycleService) RevokeCertificate(
 		)
 	}
 
+	hasActiveSuccessor := false
 	if state.StaticIP != "" {
+		if err := tx.QueryRowContext(
+			ctx,
+			`SELECT EXISTS(
+				SELECT 1 FROM certificates
+				WHERE id <> ?
+					AND static_ip = ?
+					AND status = 'valid'
+					AND archived_at IS NULL
+			)`,
+			certificateID,
+			state.StaticIP,
+		).Scan(&hasActiveSuccessor); err != nil {
+			_ = tx.Rollback()
+			return RevokeCertificateResult{}, s.auditFailure(
+				ctx,
+				actor,
+				auditActionRevoke,
+				certificateID,
+				"ip_allocation_check_failed",
+				err,
+			)
+		}
+	}
+	if state.StaticIP != "" && !hasActiveSuccessor {
 		if _, err := tx.ExecContext(ctx, `INSERT INTO ip_allocations (
 			ip_address, pool_name, certificate_id, status,
 			allocated_at, pending_release_at, released_at, notes
@@ -625,6 +1113,165 @@ func (s *CertificateLifecycleService) runEasyRSA(
 	)
 }
 
+func (s *CertificateLifecycleService) resolveRevokeCommand(
+	state CertificateState,
+) (string, error) {
+	currentMatches, currentErr := s.certificateFileMatchesState(
+		filepath.Join(s.pkiDir, "issued", state.CommonName+".crt"),
+		state,
+	)
+	if currentErr != nil && !errors.Is(currentErr, os.ErrNotExist) {
+		return "", currentErr
+	}
+	renewedMatches, renewedErr := s.certificateFileMatchesState(
+		filepath.Join(s.pkiDir, "renewed", "issued", state.CommonName+".crt"),
+		state,
+	)
+	if renewedErr != nil && !errors.Is(renewedErr, os.ErrNotExist) {
+		return "", renewedErr
+	}
+	switch {
+	case currentMatches && !renewedMatches:
+		return "revoke", nil
+	case renewedMatches && !currentMatches:
+		return "revoke-renewed", nil
+	default:
+		return "", ErrCertificatePKIMismatch
+	}
+}
+
+func (s *CertificateLifecycleService) completedRenewalState(
+	ctx context.Context,
+	state CertificateState,
+	currentSerial string,
+) (bool, int64) {
+	currentRecord, err := s.loadPKICertificate(currentSerial)
+	if err != nil ||
+		currentRecord.CommonName != state.CommonName ||
+		currentRecord.Status != "valid" {
+		return false, 0
+	}
+	renewedMatches, err := s.certificateFileMatchesState(
+		filepath.Join(s.pkiDir, "renewed", "issued", state.CommonName+".crt"),
+		state,
+	)
+	if err != nil || !renewedMatches {
+		return false, 0
+	}
+	certificateID, _ := s.certificateIDBySerial(ctx, currentSerial)
+	return true, certificateID
+}
+
+func (s *CertificateLifecycleService) currentIssuedCertificateSerial(
+	commonName string,
+) (string, error) {
+	serial, certificateCommonName, err := readCertificateIdentity(
+		filepath.Join(s.pkiDir, "issued", commonName+".crt"),
+	)
+	if err != nil {
+		return "", err
+	}
+	if certificateCommonName != commonName {
+		return "", ErrCertificatePKIMismatch
+	}
+	return serial, nil
+}
+
+func (s *CertificateLifecycleService) certificateFileMatchesState(
+	path string,
+	state CertificateState,
+) (bool, error) {
+	serial, commonName, err := readCertificateIdentity(path)
+	if err != nil {
+		return false, err
+	}
+	return commonName == state.CommonName &&
+		normalizeCertificateSerial(serial) ==
+			normalizeCertificateSerial(state.SerialNumber), nil
+}
+
+func readCertificateIdentity(path string) (string, string, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return "", "", err
+	}
+	block, _ := pem.Decode(data)
+	if block == nil || block.Type != "CERTIFICATE" {
+		return "", "", errors.New("certificate file does not contain a PEM certificate")
+	}
+	certificate, err := x509.ParseCertificate(block.Bytes)
+	if err != nil {
+		return "", "", err
+	}
+	if certificate.SerialNumber == nil || certificate.SerialNumber.Sign() < 0 {
+		return "", "", errors.New("certificate file has an invalid serial number")
+	}
+	return strings.ToUpper(certificate.SerialNumber.Text(16)),
+		certificate.Subject.CommonName,
+		nil
+}
+
+func normalizeCertificateSerial(serial string) string {
+	normalized := strings.TrimLeft(strings.ToUpper(strings.TrimSpace(serial)), "0")
+	if normalized == "" {
+		return "0"
+	}
+	return normalized
+}
+
+func (s *CertificateLifecycleService) certificateIDBySerial(
+	ctx context.Context,
+	serial string,
+) (int64, error) {
+	rows, err := s.db.QueryContext(
+		ctx,
+		`SELECT id, serial_number FROM certificates`,
+	)
+	if err != nil {
+		return 0, err
+	}
+	defer rows.Close()
+
+	normalizedSerial := normalizeCertificateSerial(serial)
+	for rows.Next() {
+		var certificateID int64
+		var storedSerial string
+		if err := rows.Scan(&certificateID, &storedSerial); err != nil {
+			return 0, err
+		}
+		if normalizeCertificateSerial(storedSerial) == normalizedSerial {
+			return certificateID, nil
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return 0, err
+	}
+	return 0, sql.ErrNoRows
+}
+
+func (s *CertificateLifecycleService) transferStaticIPAllocation(
+	ctx context.Context,
+	previousCertificateID int64,
+	newCertificateID int64,
+) error {
+	if previousCertificateID <= 0 ||
+		newCertificateID <= 0 ||
+		previousCertificateID == newCertificateID {
+		return errors.New("invalid certificate allocation transfer")
+	}
+	if _, err := s.db.ExecContext(
+		ctx,
+		`UPDATE ip_allocations
+		SET certificate_id = ?
+		WHERE certificate_id = ? AND status = 'allocated'`,
+		newCertificateID,
+		previousCertificateID,
+	); err != nil {
+		return err
+	}
+	return nil
+}
+
 func (s *CertificateLifecycleService) loadPKICertificate(
 	serialNumber string,
 ) (certificateMetadata, error) {
@@ -638,9 +1285,9 @@ func (s *CertificateLifecycleService) loadPKICertificate(
 	if err != nil {
 		return certificateMetadata{}, err
 	}
-	normalizedSerial := strings.ToUpper(serialNumber)
+	normalizedSerial := normalizeCertificateSerial(serialNumber)
 	for _, record := range records {
-		if record.SerialNumber == normalizedSerial {
+		if normalizeCertificateSerial(record.SerialNumber) == normalizedSerial {
 			return record, nil
 		}
 	}
@@ -706,12 +1353,75 @@ type auditExecutor interface {
 	ExecContext(context.Context, string, ...any) (sql.Result, error)
 }
 
+func (s *CertificateLifecycleService) RecordCertificateOperationAudit(
+	ctx context.Context,
+	actor CertificateLifecycleActor,
+	action string,
+	targetID string,
+	result string,
+	errorSummary string,
+) error {
+	summary, validAction := map[string]string{
+		CertificateAuditActionArchive:  "certificate archive",
+		CertificateAuditActionCreate:   "certificate creation",
+		CertificateAuditActionDownload: "certificate configuration download",
+		CertificateAuditActionReload:   "OpenVPN configuration reload",
+		CertificateAuditActionRenew:    "certificate renewal",
+		CertificateAuditActionRestart:  "OpenVPN restart",
+		CertificateAuditActionRevoke:   "certificate revocation",
+	}[action]
+	if !validAction {
+		return errors.New("invalid certificate audit action")
+	}
+	switch result {
+	case "success", "success_with_warning", "failed":
+	default:
+		return errors.New("invalid certificate audit result")
+	}
+	if errorSummary != "" &&
+		!auditErrorSummaryPattern.MatchString(errorSummary) {
+		return errors.New("invalid certificate audit error summary")
+	}
+	return s.recordAuditTarget(
+		ctx,
+		s.db,
+		actor,
+		action,
+		normalizeAuditTargetID(targetID),
+		summary,
+		result,
+		errorSummary,
+	)
+}
+
 func (s *CertificateLifecycleService) recordAudit(
 	ctx context.Context,
 	executor auditExecutor,
 	actor CertificateLifecycleActor,
 	action string,
 	certificateID int64,
+	summary string,
+	result string,
+	errorSummary string,
+) error {
+	return s.recordAuditTarget(
+		ctx,
+		executor,
+		actor,
+		action,
+		strconv.FormatInt(certificateID, 10),
+		summary,
+		result,
+		errorSummary,
+	)
+}
+
+func (s *CertificateLifecycleService) recordAuditTarget(
+	ctx context.Context,
+	executor auditExecutor,
+	actor CertificateLifecycleActor,
+	action string,
+	targetID string,
 	summary string,
 	result string,
 	errorSummary string,
@@ -729,7 +1439,7 @@ func (s *CertificateLifecycleService) recordAudit(
 		sourceIP,
 		action,
 		auditTargetType,
-		strconv.FormatInt(certificateID, 10),
+		targetID,
 		summary,
 		result,
 		errorSummary,
@@ -740,6 +1450,18 @@ func (s *CertificateLifecycleService) recordAudit(
 		return fmt.Errorf("write certificate lifecycle audit: %w", err)
 	}
 	return nil
+}
+
+func normalizeAuditTargetID(targetID string) string {
+	targetID = strings.TrimSpace(targetID)
+	if targetID == "" {
+		return ""
+	}
+	if len(targetID) > 128 ||
+		!auditTargetIDPattern.MatchString(targetID) {
+		return "unavailable"
+	}
+	return targetID
 }
 
 func (s *CertificateLifecycleService) auditFailure(

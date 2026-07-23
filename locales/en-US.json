@@ -87,6 +87,7 @@
   "certificate.remove_failed": "Failed to remove certificate record",
   "certificate.removed": "Certificate \"%s\" (serial %s) removed",
   "certificate.renew": "Renew",
+  "certificate.already_renewed": "This certificate was already renewed; database metadata was synchronized again",
   "certificate.renew_failed": "Failed to renew certificate",
   "certificate.renewed": "Certificate \"%s\" renewed; static IP: %s; serial: %s",
   "certificate.revocation": "Revocation",
