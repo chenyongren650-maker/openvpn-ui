@@ -5,6 +5,7 @@ import (
 	"flag"
 	"fmt"
 	"path/filepath"
+	"strings"
 
 	"github.com/beego/beego/v2/client/orm"
 	"github.com/beego/beego/v2/core/logs"
@@ -70,7 +71,33 @@ func main() {
 		)
 	}
 
-	routers.Init(*configDir)
+	serverConfig := models.OVConfig{Profile: "default"}
+	protectedCommonNames := []string{"server", "zs-vpn"}
+	if err := serverConfig.Read("Profile"); err == nil {
+		serverCertificateName := strings.TrimSuffix(
+			filepath.Base(serverConfig.Cert),
+			filepath.Ext(serverConfig.Cert),
+		)
+		if serverCertificateName != "" && serverCertificateName != "." {
+			protectedCommonNames = append(protectedCommonNames, serverCertificateName)
+		}
+	}
+	lifecycleService, err := services.NewCertificateLifecycleService(
+		db,
+		services.CertificateLifecycleConfig{
+			EasyRSABinary:        filepath.Join(state.GlobalCfg.EasyRSAPath, "easyrsa"),
+			EasyRSAWorkingDir:    state.GlobalCfg.EasyRSAPath,
+			PKIDir:               filepath.Join(state.GlobalCfg.EasyRSAPath, "pki"),
+			ManagementNetwork:    state.GlobalCfg.MINetwork,
+			ManagementAddress:    state.GlobalCfg.MIAddress,
+			ProtectedCommonNames: protectedCommonNames,
+		},
+	)
+	if err != nil {
+		panic(fmt.Errorf("initialize certificate lifecycle service: %w", err))
+	}
+
+	routers.Init(*configDir, lifecycleService)
 
 	lib.AddFuncMaps()
 	web.Run()

@@ -12,6 +12,11 @@
       <div class="card-header">
         <h3 class="card-title"> {{ if eq (printf "%d" $.SettingsC.FuncMode) "1" }}{{t .Localizer "certificate.2fa_authorization"}} <b style="color: #00a65a;">{{t .Localizer "common.enabled"}}</b></h3>{{else}}<h3 class="card-title">{{t .Localizer "certificate.client_certificates"}}</h3>{{end}}
         <div class="card-tools">
+          {{if .ShowArchived}}
+          <a class="btn btn-default btn-sm" href="{{urlfor "CertificatesController.Get"}}">{{t .Localizer "certificate.active_view"}}</a>
+          {{else}}
+          <a class="btn btn-default btn-sm" href="{{urlfor "CertificatesController.Get"}}?view=archived">{{t .Localizer "certificate.archived_view"}}</a>
+          {{end}}
           <button type="button" class="btn btn-tool" data-card-widget="collapse">
           <i class="fa fa-minus"></i></button>
         </div>
@@ -41,9 +46,11 @@
               {{ if ne .Details.Name "server"}}
               <tr>
                   <td>
-                    <a href="{{urlfor "CertificatesController.Download" ":key" .Details.Name}}">
-                      {{ .Details.Name }}
-                    </a>
+                    {{if .DownloadAllowed}}
+                      <a href="{{urlfor "CertificatesController.Download" ":id" .ID}}">{{ .CommonName }}</a>
+                    {{else}}
+                      <span>{{ .CommonName }}</span>
+                    {{end}}
                   </td>
                   {{if and (eq .Revocation "") (not .IsExpiring)}}
                     <td>
@@ -103,21 +110,38 @@
                     </td>
                   {{end}}
                     <td class="align-middle">
-                  {{ if and (eq .Revocation "") (ne .Details.Name "") }}
-                      <a href="{{urlfor "CertificatesController.Renew" ":key" .Details.Name ":localip" .Details.LocalIP ":serial" .Serial ":tfaname" .Details.TFAName}}" class="btn btn-primary btn-xs" title="{{t $.Localizer "certificate.renew"}}" style="font-size: 80%;">{{t $.Localizer "certificate.renew"}}</a>
+                  {{ if and $.CanManageCertificates (eq .Revocation "") (ne .Details.Name "") }}
+                      <form method="post" action="{{urlfor "CertificatesController.Renew" ":key" .Details.Name ":localip" .Details.LocalIP ":serial" .Serial ":tfaname" .Details.TFAName}}" class="d-inline">
+                        <input type="hidden" name="_csrf" value="{{$.SessionCSRFToken}}">
+                        <button type="submit" class="btn btn-primary btn-xs" title="{{t $.Localizer "certificate.renew"}}" style="font-size: 80%;">{{t $.Localizer "certificate.renew"}}</button>
+                      </form>
                   {{else}}
                       <a class="btn btn-default btn-xs" disabled>{{t $.Localizer "certificate.renew"}}</a>
                   {{end}}
 
-                  {{ if and (eq .Revocation "") (ne .Details.Name "") }}
-                      <a href="{{urlfor "CertificatesController.Revoke" ":key" .Details.Name ":serial" .Serial ":tfaname" .Details.TFAName}}" class="btn btn-warning btn-xs" title="{{t $.Localizer "certificate.revoke"}}" style="font-size: 80%;">{{t $.Localizer "certificate.revoke"}}</a>
+                  {{ if and $.CanManageCertificates (eq .LifecycleStatus "valid") }}
+                      <form method="post" action="{{urlfor "CertificatesController.Revoke" ":id" .ID}}" class="d-inline">
+                        <input type="hidden" name="_csrf" value="{{$.SessionCSRFToken}}">
+                        <input type="text" name="confirmation" class="form-control form-control-sm d-inline-block"
+                          style="width: 135px;" required autocomplete="off"
+                          placeholder="{{t $.Localizer "certificate.confirm_name"}}"
+                          aria-label="{{t $.Localizer "certificate.confirm_name"}}">
+                        <button type="submit" class="btn btn-warning btn-xs"
+                          title="{{t $.Localizer "certificate.revoke"}}">{{t $.Localizer "certificate.revoke"}}</button>
+                      </form>
                   {{else}}
                       <a class="btn btn-default btn-xs" disabled>{{t $.Localizer "certificate.revoke"}}</a>
                   {{end}}
-                  {{ if eq .Revocation ""}}
-                      <a class="btn btn-default btn-xs" disabled>{{t $.Localizer "common.delete"}}</a>
+                  {{ if and $.CanManageCertificates (eq .LifecycleStatus "revoked") }}
+                      <form method="post" action="{{urlfor "CertificatesController.Archive" ":id" .ID}}" class="d-inline">
+                        <input type="hidden" name="_csrf" value="{{$.SessionCSRFToken}}">
+                        <button type="submit" class="btn btn-danger btn-xs"
+                          title="{{t $.Localizer "certificate.archive"}}">{{t $.Localizer "certificate.archive"}}</button>
+                      </form>
+                  {{else if eq .LifecycleStatus "archived"}}
+                      <a class="btn btn-default btn-xs" disabled>{{t $.Localizer "certificate.archived_status"}}</a>
                   {{else}}
-                      <a href="{{urlfor "CertificatesController.Burn" ":key" .Details.CN ":serial" .Serial ":tfaname" .Details.TFAName}}" class="btn btn-danger btn-xs" title="{{t $.Localizer "common.delete"}}" style="font-size: 80%;">{{t $.Localizer "common.delete"}}</a>
+                      <a class="btn btn-default btn-xs" disabled>{{t $.Localizer "certificate.archive"}}</a>
                   {{end}}
                     </td>
               </tr>
@@ -144,7 +168,7 @@
                         <dd class="copy-details cert-name"><h4 style="color: #3c8dbc">{{ .Details.CN }}</h4></dd>
                         {{end}}
                         <dt class="copy-details">{{t $.Localizer "common.status"}}：</dt>
-                        <dd class="copy-details">{{if eq .EntryType "V"}}<span class="badge bg-success" style="font-size: 110%;" >{{t $.Localizer "certificate.valid"}}</span>{{else if eq .EntryType "R"}}<span class="badge bg-danger" style="font-size: 110%;">{{t $.Localizer "certificate.revoked_status"}}</span>{{else}}{{t $.Localizer "common.unknown"}}{{end}}</dd>
+                        <dd class="copy-details">{{if eq .LifecycleStatus "archived"}}<span class="badge bg-secondary" style="font-size: 110%;">{{t $.Localizer "certificate.archived_status"}}</span>{{else if eq .EntryType "V"}}<span class="badge bg-success" style="font-size: 110%;" >{{t $.Localizer "certificate.valid"}}</span>{{else if eq .EntryType "R"}}<span class="badge bg-danger" style="font-size: 110%;">{{t $.Localizer "certificate.revoked_status"}}</span>{{else}}{{t $.Localizer "common.unknown"}}{{end}}</dd>
                         <dt class="copy-details">{{t $.Localizer "certificate.expiration_time"}}：</dt>
                         <dd class="copy-details exp-time">{{ if and .IsExpiring (eq .Revocation "") (ne .Details.Name "") }}<span class="badge bg-warning" style="font-size: 110%;">{{ dateformat .ExpirationT "2006-01-02 15:04:05"}} <b>{{t $.Localizer "certificate.expiring_soon"}}</b></span>{{else}}<span class="badge bg-success">{{ dateformat .ExpirationT "2006-01-02 15:04:05"}}</span>{{end}}</dd>
                         <dt class="copy-details">{{t $.Localizer "certificate.revoke_time"}}：</dt>
@@ -218,7 +242,7 @@
         <!-- /.box-header -->
         {{template "common/alert.html" .}}
       <div class="card-body">
-        <button type="button" class="btn btn-primary" data-toggle="modal" data-target="#modal-default">
+        <button type="button" class="btn btn-primary" data-toggle="modal" data-target="#modal-default" {{if not .CanManageCertificates}}disabled{{end}}>
           {{t .Localizer "certificate.create"}}
         </button>
         <span class="text-muted"> {{template "common/fvalid.html" field_error_message .validation "Name" }}</span>
@@ -240,6 +264,7 @@
         <!-- form start -->
        {{template "common/alert.html" .}}
         <form role="form" action="{{urlfor "CertificatesController.Post"}}" method="post">
+          <input type="hidden" name="_csrf" value="{{.SessionCSRFToken}}">
           <div class="box-body">
             <div class="form-group has-success {{if field_error_exist .validation "Name" }}has-error{{end}}">
               <label class="control-label" for="name" title="{{t .Localizer "certificate.name_no_spaces"}}"><i class="fa fa-bell-o"></i>{{t .Localizer "certificate.name"}}</label>
@@ -343,9 +368,15 @@
   <!-- /.box-header -->
   <div class="card-body">
     <span id="helpBlock" class="text-muted">{{t .Localizer "certificate.revoke_restart_help"}}<br/></span><br>
-    <a href="javascript:$.MyAPP.Restart('SIGUSR1')" class="btn btn-warning btn-primary" style="width: 145px;" title="{{t .Localizer "maintenance.conditional_restart"}}">{{t .Localizer "maintenance.restart_server"}}</a>
+    <form method="post" action="{{urlfor "CertificatesController.Reload"}}" class="d-inline">
+      <input type="hidden" name="_csrf" value="{{.SessionCSRFToken}}">
+      <button type="submit" class="btn btn-warning btn-primary" style="width: 145px;" title="{{t .Localizer "maintenance.conditional_restart"}}" {{if not .CanManageCertificates}}disabled{{end}}>{{t .Localizer "maintenance.restart_server"}}</button>
+    </form>
     &nbsp; {{t .Localizer "certificate.conditional_restart_help"}} <br><br>
-    <a href="{{urlfor "CertificatesController.Restart"}}" class="btn btn-danger btn-primary" style="width: 145px;" title="{{t .Localizer "maintenance.restart_container"}}">{{t .Localizer "maintenance.restart_container"}}</a>
+    <form method="post" action="{{urlfor "CertificatesController.Restart"}}" class="d-inline">
+      <input type="hidden" name="_csrf" value="{{.SessionCSRFToken}}">
+      <button type="submit" class="btn btn-danger btn-primary" style="width: 145px;" title="{{t .Localizer "maintenance.restart_container"}}" {{if not .CanManageCertificates}}disabled{{end}}>{{t .Localizer "maintenance.restart_container"}}</button>
+    </form>
     &nbsp; {{t .Localizer "certificate.container_restart_help"}}
   </div>
   <!-- /.box-footer -->

@@ -241,22 +241,6 @@ func CreateCertificate(name string, staticip string, passphrase string, expireda
 	}
 }
 
-func RevokeCertificate(name string, serial string, tfaname string) error {
-	cmd := exec.Command("/bin/bash", "-c",
-		fmt.Sprintf(
-			"cd /opt/scripts/ && "+
-				"export KEY_NAME=%s &&"+
-				"export TFA_NAME=%s &&"+
-				"./revoke.sh %s %s", name, tfaname, name, serial))
-	cmd.Dir = state.GlobalCfg.OVConfigPath
-	_, err := cmd.CombinedOutput()
-	if err != nil {
-		logs.Error("ERR_CERT_REVOKE_COMMAND")
-		return err
-	}
-	return nil
-}
-
 func Restart() error {
 	cmd := exec.Command("/bin/bash", "-c",
 		fmt.Sprintf(
@@ -266,22 +250,6 @@ func Restart() error {
 	_, err := cmd.CombinedOutput()
 	if err != nil {
 		logs.Error("ERR_OPENVPN_RESTART_COMMAND")
-		return err
-	}
-	return nil
-}
-
-func BurnCertificate(CN string, serial string, tfaname string) error {
-	logs.Info("Lib: Burning certificate with parameters: CN=%s, serial=%s, tfaname=%s", CN, serial, tfaname)
-	cmd := exec.Command("/bin/bash", "-c",
-		fmt.Sprintf(
-			"cd /opt/scripts/ && "+
-				"export TFA_NAME=%s &&"+
-				"./rmcert.sh %s %s", tfaname, CN, serial))
-	cmd.Dir = state.GlobalCfg.OVConfigPath
-	_, err := cmd.CombinedOutput()
-	if err != nil {
-		logs.Error("ERR_CERT_REMOVE_COMMAND")
 		return err
 	}
 	return nil

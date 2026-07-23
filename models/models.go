@@ -41,7 +41,9 @@ func InitDB() error {
 	if err := orm.RegisterDataBase("default", "sqlite3", dbSource); err != nil {
 		return fmt.Errorf("register SQLite database: %w", err)
 	}
-	orm.Debug = true
+	// SQL debug output may include certificate metadata or other sensitive
+	// parameters. Keep it disabled in every run mode.
+	orm.Debug = false
 	orm.RegisterModel(
 		new(User),
 		new(Settings),

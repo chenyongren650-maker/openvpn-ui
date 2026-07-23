@@ -35,3 +35,38 @@ func TestResolveLanguagePreferenceOmitsSecureOnHTTP(t *testing.T) {
 		t.Fatalf("HTTP cookie settings = %#v", cookie)
 	}
 }
+
+func TestSessionCSRFIsBoundToOneSessionToken(t *testing.T) {
+	sessionToken, err := newRandomToken(32)
+	if err != nil {
+		t.Fatalf("create session CSRF token: %v", err)
+	}
+	otherSessionToken, err := newRandomToken(32)
+	if err != nil {
+		t.Fatalf("create second session CSRF token: %v", err)
+	}
+	if !validSessionCSRF(sessionToken, sessionToken) {
+		t.Fatal("matching session CSRF token was rejected")
+	}
+	for _, presented := range []string{"", otherSessionToken, sessionToken[:len(sessionToken)-1]} {
+		if validSessionCSRF(sessionToken, presented) {
+			t.Fatalf("invalid session CSRF token was accepted: %q", presented)
+		}
+	}
+}
+
+func TestResolveRequestIDAcceptsSafeHeaderAndReplacesUnsafeInput(t *testing.T) {
+	const supplied = "request-20260723.001"
+	requestID, err := resolveRequestID(" " + supplied + " ")
+	if err != nil || requestID != supplied {
+		t.Fatalf("safe request ID = %q, error = %v", requestID, err)
+	}
+
+	generated, err := resolveRequestID("../../unsafe?request")
+	if err != nil {
+		t.Fatalf("generate replacement request ID: %v", err)
+	}
+	if generated == "../../unsafe?request" || !requestIDPattern.MatchString(generated) {
+		t.Fatalf("unsafe request ID replacement = %q", generated)
+	}
+}

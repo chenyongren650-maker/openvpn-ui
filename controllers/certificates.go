@@ -2,19 +2,25 @@ package controllers
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
+	"net"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"text/template"
 
 	"github.com/beego/beego/v2/core/logs"
 	"github.com/beego/beego/v2/core/validation"
 	"github.com/beego/beego/v2/server/web"
 	clientconfig "github.com/d3vilh/openvpn-server-config/client/client-config"
+	mi "github.com/d3vilh/openvpn-server-config/server/mi"
 	"github.com/d3vilh/openvpn-ui/i18n"
 	"github.com/d3vilh/openvpn-ui/lib"
 	"github.com/d3vilh/openvpn-ui/models"
+	"github.com/d3vilh/openvpn-ui/services"
 	"github.com/d3vilh/openvpn-ui/state"
 )
 
@@ -35,7 +41,17 @@ type NewCertParams struct {
 
 type CertificatesController struct {
 	BaseController
-	ConfigDir string
+	ConfigDir        string
+	LifecycleService *services.CertificateLifecycleService
+}
+
+type CertificatePageRecord struct {
+	*lib.Cert
+	ID              int64
+	CommonName      string
+	LifecycleStatus string
+	DownloadAllowed bool
+	Protected       bool
 }
 
 func (c *CertificatesController) NestPrepare() {
@@ -46,36 +62,105 @@ func (c *CertificatesController) NestPrepare() {
 	c.Data["breadcrumbs"] = &BreadCrumbs{
 		Title: c.T("breadcrumb.certificates"),
 	}
+	c.Data["CanManageCertificates"] = c.Userinfo != nil && c.Userinfo.IsAdmin
 }
 
-// @router /certificates/:key [get]
+// @router /certificates/:id/download [get]
 func (c *CertificatesController) Download() {
-	name := c.GetString(":key")
-	filename := fmt.Sprintf("%s.ovpn", name)
+	certificateID, err := c.certificateID()
+	if err != nil || c.LifecycleService == nil {
+		c.renderCertificateHTTPError(http.StatusNotFound, "certificate.not_found")
+		return
+	}
+	certificateState, err := c.LifecycleService.DownloadableCertificate(
+		c.Ctx.Request.Context(),
+		certificateID,
+	)
+	if err != nil {
+		_ = c.LifecycleService.RecordCertificateDownloadAudit(
+			c.Ctx.Request.Context(),
+			certificateID,
+			c.lifecycleActor(),
+			"failed",
+			"download_blocked",
+		)
+		status := http.StatusConflict
+		key := "certificate.download_blocked"
+		if errors.Is(err, services.ErrCertificateNotFound) {
+			status = http.StatusNotFound
+			key = "certificate.not_found"
+		}
+		c.renderCertificateHTTPError(status, key)
+		return
+	}
 
-	c.Ctx.Output.Header("Content-Type", "application/octet-stream")
-	c.Ctx.Output.Header("Content-Disposition", fmt.Sprintf("attachment; filename=\"%s\"", filename))
+	name := certificateState.CommonName
+	filename := fmt.Sprintf("%s.ovpn", name)
 
 	keysPath := filepath.Join(state.GlobalCfg.OVConfigPath, "pki/issued")
 
 	cfgPath, err := c.saveClientConfig(keysPath, name)
 	if err != nil {
-		logs.Error(err)
+		_ = c.LifecycleService.RecordCertificateDownloadAudit(
+			c.Ctx.Request.Context(),
+			certificateID,
+			c.lifecycleActor(),
+			"failed",
+			"configuration_build_failed",
+		)
+		logs.Error("ERR_CERT_DOWNLOAD_BUILD")
+		c.renderCertificateHTTPError(http.StatusInternalServerError, "certificate.download_failed")
 		return
 	}
 	data, err := os.ReadFile(cfgPath)
 	if err != nil {
-		logs.Error(err)
+		_ = c.LifecycleService.RecordCertificateDownloadAudit(
+			c.Ctx.Request.Context(),
+			certificateID,
+			c.lifecycleActor(),
+			"failed",
+			"configuration_read_failed",
+		)
+		logs.Error("ERR_CERT_DOWNLOAD_READ")
+		c.renderCertificateHTTPError(http.StatusInternalServerError, "certificate.download_failed")
 		return
 	}
+	if _, err := c.LifecycleService.DownloadableCertificate(
+		c.Ctx.Request.Context(),
+		certificateID,
+	); err != nil {
+		_ = c.LifecycleService.RecordCertificateDownloadAudit(
+			c.Ctx.Request.Context(),
+			certificateID,
+			c.lifecycleActor(),
+			"failed",
+			"download_blocked_after_generation",
+		)
+		c.renderCertificateHTTPError(http.StatusConflict, "certificate.download_blocked")
+		return
+	}
+	if err := c.LifecycleService.RecordCertificateDownloadAudit(
+		c.Ctx.Request.Context(),
+		certificateID,
+		c.lifecycleActor(),
+		"success",
+		"",
+	); err != nil {
+		logs.Error("ERR_CERT_DOWNLOAD_AUDIT")
+		c.renderCertificateHTTPError(http.StatusInternalServerError, "certificate.download_failed")
+		return
+	}
+	c.Ctx.Output.Header("Content-Type", "application/octet-stream")
+	c.Ctx.Output.Header("Content-Disposition", fmt.Sprintf("attachment; filename=\"%s\"", filename))
 	if _, err = c.Controller.Ctx.ResponseWriter.Write(data); err != nil {
-		logs.Error(err)
+		logs.Error("ERR_CERT_DOWNLOAD_WRITE")
 	}
 }
 
 // @router /certificates [get]
 func (c *CertificatesController) Get() {
 	c.TplName = "certificates.html"
+	c.Data["ShowArchived"] = c.GetString("view") == "archived"
 	c.showCerts()
 	cfg := models.EasyRSAConfig{Profile: "default"}
 	_ = cfg.Read("Profile")
@@ -88,18 +173,19 @@ func (c *CertificatesController) Get() {
 
 func (c *CertificatesController) DisplayImage() {
 	imageName := c.Ctx.Input.Param(":imageName")
-	logs.Info("Image name: %s", imageName)
+	if !services.ValidateCertificateCommonName(imageName) {
+		c.Ctx.Output.SetStatus(http.StatusNotFound)
+		c.Ctx.WriteString(c.T("certificate.image_not_found"))
+		return
+	}
 	imagePath := filepath.Join(state.GlobalCfg.OVConfigPath, "clients/", imageName+".png")
-	// destPath := filepath.Join(state.GlobalCfg.OVConfigPath, "clients", name+".ovpn")
-	//imagePath := "./openvpn/clients/" + imageName + ".png"
-	logs.Info("Image path: %s", imagePath)
 
 	// Check if the image file exists
 	data, err := os.ReadFile(imagePath)
 	if err != nil {
 		c.Ctx.Output.SetStatus(404)
 		c.Ctx.WriteString(c.T("certificate.image_not_found"))
-		logs.Error("Error reading image file: %v", err)
+		logs.Error("ERR_CERT_IMAGE_READ")
 		return
 	}
 
@@ -114,10 +200,47 @@ func (c *CertificatesController) showCerts() {
 	path := filepath.Join(state.GlobalCfg.OVConfigPath, "pki/index.txt")
 	certs, err := lib.ReadCerts(path)
 	if err != nil {
-		logs.Error(err)
+		logs.Error("ERR_CERT_LIST_PKI")
+		c.Data["certificates"] = []*CertificatePageRecord{}
+		return
 	}
-	lib.Dump(certs)
-	c.Data["certificates"] = &certs
+	if c.LifecycleService == nil {
+		logs.Error("ERR_CERT_LIFECYCLE_UNAVAILABLE")
+		c.Data["certificates"] = []*CertificatePageRecord{}
+		return
+	}
+	showArchived, _ := c.Data["ShowArchived"].(bool)
+	states, err := c.LifecycleService.ListCertificateStates(
+		c.Ctx.Request.Context(),
+		showArchived,
+	)
+	if err != nil {
+		logs.Error("ERR_CERT_LIST_DATABASE")
+		c.Data["certificates"] = []*CertificatePageRecord{}
+		return
+	}
+	stateBySerial := make(map[string]services.CertificateState, len(states))
+	for _, certificateState := range states {
+		stateBySerial[strings.ToUpper(certificateState.SerialNumber)] = certificateState
+	}
+	pageRecords := make([]*CertificatePageRecord, 0, len(states))
+	for _, certificate := range certs {
+		certificateState, exists := stateBySerial[strings.ToUpper(certificate.Serial)]
+		if !exists || certificateState.Protected {
+			continue
+		}
+		pageRecords = append(pageRecords, &CertificatePageRecord{
+			Cert:            certificate,
+			ID:              certificateState.ID,
+			CommonName:      certificateState.CommonName,
+			LifecycleStatus: certificateState.Status,
+			DownloadAllowed: certificateState.Status == "valid" &&
+				certificate.EntryType == "V" &&
+				certificate.Revocation == "",
+			Protected: certificateState.Protected,
+		})
+	}
+	c.Data["certificates"] = pageRecords
 	cfg := models.EasyRSAConfig{Profile: "default"}
 	_ = cfg.Read("Profile")
 	c.Data["EasyRSA"] = &cfg
@@ -128,6 +251,14 @@ func (c *CertificatesController) showCerts() {
 
 // @router /certificates [post]
 func (c *CertificatesController) Post() {
+	if !c.ValidSessionCSRF() {
+		c.renderCertificateHTTPError(http.StatusForbidden, "error.csrf_invalid")
+		return
+	}
+	if !c.canManageCertificates() {
+		c.renderCertificateHTTPError(http.StatusForbidden, "error.admin_required")
+		return
+	}
 	c.TplName = "certificates.html"
 	flash := web.NewFlash()
 
@@ -147,6 +278,14 @@ func (c *CertificatesController) Post() {
 				flash.Store(&c.Controller)
 			} else {
 				c.FlashSuccess(flash, "certificate.created", cParams.Name)
+				if c.LifecycleService == nil {
+					c.FlashWarning(flash, "certificate.metadata_sync_failed")
+				} else if _, err := c.LifecycleService.SyncCertificateMetadata(
+					c.Ctx.Request.Context(),
+				); err != nil {
+					logs.Error("ERR_CERT_METADATA_SYNC")
+					c.FlashWarning(flash, "certificate.metadata_sync_failed")
+				}
 				flash.Store(&c.Controller)
 			}
 		}
@@ -155,70 +294,175 @@ func (c *CertificatesController) Post() {
 	_ = cfg.Read("Profile")
 	c.Data["EasyRSA"] = &cfg
 
+	c.Data["ShowArchived"] = false
 	c.showCerts()
 }
 
-// @router /certificates/revoke/:key [get]
+// @router /certificates/:id/revoke [post]
 func (c *CertificatesController) Revoke() {
-	c.TplName = "certificates.html"
+	if !c.ValidSessionCSRF() {
+		c.renderCertificateHTTPError(http.StatusForbidden, "error.csrf_invalid")
+		return
+	}
 	flash := web.NewFlash()
-	name := c.GetString(":key")
-	serial := c.GetString(":serial")
-	tfaname := c.GetString(":tfaname")
-	if err := lib.RevokeCertificate(name, serial, tfaname); err != nil {
+	certificateID, err := c.certificateID()
+	if err != nil || c.LifecycleService == nil {
+		c.FlashError(
+			flash,
+			"certificate.not_found",
+			"ERR_CERT_NOT_FOUND",
+			services.ErrCertificateNotFound,
+			false,
+		)
+		flash.Store(&c.Controller)
+		c.Redirect(c.URLFor("CertificatesController.Get"), http.StatusSeeOther)
+		return
+	}
+
+	result, err := c.LifecycleService.RevokeCertificate(
+		c.Ctx.Request.Context(),
+		certificateID,
+		c.GetString("confirmation"),
+		c.lifecycleActor(),
+	)
+	if err != nil {
 		logs.Error("ERR_CERT_REVOKE")
-		c.FlashError(flash, "certificate.revoke_failed", "ERR_CERT_REVOKE", err, false)
-		flash.Store(&c.Controller)
+		c.FlashError(
+			flash,
+			c.lifecycleErrorKey(err, "certificate.revoke_failed"),
+			"ERR_CERT_REVOKE",
+			err,
+			false,
+		)
+	} else if result.AlreadyRevoked {
+		c.FlashWarning(flash, "certificate.already_revoked")
+	} else if result.DisconnectFailed {
+		c.FlashWarning(flash, "certificate.revoked_disconnect_failed")
 	} else {
-		c.FlashSuccess(flash, "certificate.revoked", name, serial)
-		flash.Store(&c.Controller)
+		c.FlashSuccess(flash, "certificate.revoke_completed")
 	}
-	c.showCerts()
+	flash.Store(&c.Controller)
+	c.Redirect(c.URLFor("CertificatesController.Get"), http.StatusSeeOther)
 }
 
-// @router /certificates/restart [get]
+// @router /certificates/restart [post]
 func (c *CertificatesController) Restart() {
-	lib.Restart()
-	c.Redirect(c.URLFor("CertificatesController.Get"), 302)
-	// return
-}
-
-// @router /certificates/burn/:key/:serial/:tfaname [get]
-func (c *CertificatesController) Burn() {
-	c.TplName = "certificates.html"
-	flash := web.NewFlash()
-	CN := c.GetString(":key")
-	serial := c.GetString(":serial")
-	tfaname := c.GetString(":tfaname")
-	logs.Info("Controller: Burning certificate with parameters: CN=%s, serial=%s, tfaname=%s", CN, serial, tfaname)
-	if err := lib.BurnCertificate(CN, serial, tfaname); err != nil {
-		logs.Error("ERR_CERT_REMOVE")
-		c.FlashError(flash, "certificate.remove_failed", "ERR_CERT_REMOVE", err, false)
-		flash.Store(&c.Controller)
-	} else {
-		c.FlashSuccess(flash, "certificate.removed", CN, serial)
-		flash.Store(&c.Controller)
+	if !c.ValidSessionCSRF() {
+		c.renderCertificateHTTPError(http.StatusForbidden, "error.csrf_invalid")
+		return
 	}
-	c.showCerts()
+	if !c.canManageCertificates() {
+		c.renderCertificateHTTPError(http.StatusForbidden, "error.admin_required")
+		return
+	}
+	flash := web.NewFlash()
+	if err := lib.Restart(); err != nil {
+		logs.Error("ERR_OPENVPN_RESTART")
+		c.FlashError(flash, "maintenance.restart_failed", "ERR_OPENVPN_RESTART", err, false)
+	} else {
+		c.FlashSuccess(flash, "maintenance.restarted", "OpenVPN")
+	}
+	flash.Store(&c.Controller)
+	c.Redirect(c.URLFor("CertificatesController.Get"), http.StatusSeeOther)
 }
 
-// @router /certificates/revoke/:key [get]
+// @router /certificates/reload [post]
+func (c *CertificatesController) Reload() {
+	if !c.ValidSessionCSRF() {
+		c.renderCertificateHTTPError(http.StatusForbidden, "error.csrf_invalid")
+		return
+	}
+	if !c.canManageCertificates() {
+		c.renderCertificateHTTPError(http.StatusForbidden, "error.admin_required")
+		return
+	}
+	flash := web.NewFlash()
+	client := mi.NewClient(state.GlobalCfg.MINetwork, state.GlobalCfg.MIAddress)
+	if err := client.Signal("SIGUSR1"); err != nil {
+		logs.Error("ERR_OPENVPN_RELOAD")
+		c.FlashError(flash, "maintenance.restart_failed", "ERR_OPENVPN_RELOAD", err, false)
+	} else {
+		c.FlashSuccess(flash, "maintenance.restarted", "OpenVPN")
+	}
+	flash.Store(&c.Controller)
+	c.Redirect(c.URLFor("CertificatesController.Get"), http.StatusSeeOther)
+}
+
+// @router /certificates/:id/archive [post]
+func (c *CertificatesController) Archive() {
+	if !c.ValidSessionCSRF() {
+		c.renderCertificateHTTPError(http.StatusForbidden, "error.csrf_invalid")
+		return
+	}
+	flash := web.NewFlash()
+	certificateID, err := c.certificateID()
+	if err != nil || c.LifecycleService == nil {
+		c.FlashError(
+			flash,
+			"certificate.not_found",
+			"ERR_CERT_NOT_FOUND",
+			services.ErrCertificateNotFound,
+			false,
+		)
+		flash.Store(&c.Controller)
+		c.Redirect(c.URLFor("CertificatesController.Get"), http.StatusSeeOther)
+		return
+	}
+	result, err := c.LifecycleService.ArchiveCertificate(
+		c.Ctx.Request.Context(),
+		certificateID,
+		c.lifecycleActor(),
+	)
+	if err != nil {
+		logs.Error("ERR_CERT_ARCHIVE")
+		c.FlashError(
+			flash,
+			c.lifecycleErrorKey(err, "certificate.archive_failed"),
+			"ERR_CERT_ARCHIVE",
+			err,
+			false,
+		)
+	} else if result.AlreadyArchived {
+		c.FlashWarning(flash, "certificate.already_archived")
+	} else {
+		c.FlashSuccess(flash, "certificate.archived")
+	}
+	flash.Store(&c.Controller)
+	c.Redirect(c.URLFor("CertificatesController.Get"), http.StatusSeeOther)
+}
+
+// @router /certificates/renew/:key/:localip/:serial/:tfaname [post]
 func (c *CertificatesController) Renew() {
-	c.TplName = "certificates.html"
+	if !c.ValidSessionCSRF() {
+		c.renderCertificateHTTPError(http.StatusForbidden, "error.csrf_invalid")
+		return
+	}
+	if !c.canManageCertificates() {
+		c.renderCertificateHTTPError(http.StatusForbidden, "error.admin_required")
+		return
+	}
 	flash := web.NewFlash()
 	name := c.GetString(":key")
 	localip := c.GetString(":localip")
 	serial := c.GetString(":serial")
 	tfaname := c.GetString(":tfaname")
-	if err := lib.RenewCertificate(name, localip, serial, tfaname); err != nil {
+	if !validRenewalParameters(name, localip, serial, tfaname) {
+		logs.Error("ERR_CERT_RENEW_IDENTITY")
+		c.FlashError(
+			flash,
+			"certificate.identity_invalid",
+			"ERR_CERT_RENEW_IDENTITY",
+			services.ErrCertificateIdentity,
+			false,
+		)
+	} else if err := lib.RenewCertificate(name, localip, serial, tfaname); err != nil {
 		logs.Error("ERR_CERT_RENEW")
 		c.FlashError(flash, "certificate.renew_failed", "ERR_CERT_RENEW", err, false)
-		flash.Store(&c.Controller)
 	} else {
 		c.FlashSuccess(flash, "certificate.renewed", name, localip, serial)
-		flash.Store(&c.Controller)
 	}
-	c.showCerts()
+	flash.Store(&c.Controller)
+	c.Redirect(c.URLFor("CertificatesController.Get"), http.StatusSeeOther)
 }
 
 func validateCertParams(cert NewCertParams, localizer *i18n.Localizer) map[string]map[string]string {
@@ -234,7 +478,69 @@ func validateCertParams(cert NewCertParams, localizer *i18n.Localizer) map[strin
 	return nil
 }
 
+func (c *CertificatesController) certificateID() (int64, error) {
+	certificateID, err := strconv.ParseInt(c.GetString(":id"), 10, 64)
+	if err != nil || certificateID <= 0 {
+		return 0, services.ErrCertificateNotFound
+	}
+	return certificateID, nil
+}
+
+func (c *CertificatesController) canManageCertificates() bool {
+	return c.Userinfo != nil && c.Userinfo.IsAdmin
+}
+
+func validRenewalParameters(name, localIP, serial, tfaName string) bool {
+	if !services.ValidateCertificateCommonName(name) ||
+		!services.ValidateCertificateSerial(serial) {
+		return false
+	}
+	if localIP != "" && localIP != "dynamic.pool" && net.ParseIP(localIP) == nil {
+		return false
+	}
+	return tfaName == "" || services.ValidateCertificateCommonName(tfaName)
+}
+
+func (c *CertificatesController) lifecycleActor() services.CertificateLifecycleActor {
+	actor := services.CertificateLifecycleActor{
+		SourceIP:  c.Ctx.Input.IP(),
+		RequestID: c.RequestID,
+	}
+	if c.Userinfo != nil {
+		actor.UserID = c.Userinfo.Id
+		actor.IsAdmin = c.Userinfo.IsAdmin
+	}
+	return actor
+}
+
+func (c *CertificatesController) lifecycleErrorKey(err error, fallback string) string {
+	switch {
+	case errors.Is(err, services.ErrCertificateForbidden):
+		return "error.admin_required"
+	case errors.Is(err, services.ErrCertificateNotFound):
+		return "certificate.not_found"
+	case errors.Is(err, services.ErrCertificateConfirmation):
+		return "certificate.confirmation_mismatch"
+	case errors.Is(err, services.ErrCertificateInvalidState):
+		return "certificate.invalid_state"
+	case errors.Is(err, services.ErrCertificateIdentity),
+		errors.Is(err, services.ErrCertificatePKIMismatch):
+		return "certificate.identity_invalid"
+	default:
+		return fallback
+	}
+}
+
+func (c *CertificatesController) renderCertificateHTTPError(status int, key string) {
+	c.Ctx.Output.SetStatus(status)
+	c.Ctx.Output.Header("Content-Type", "text/plain; charset=utf-8")
+	c.Ctx.Output.Body([]byte(c.T(key)))
+}
+
 func (c *CertificatesController) saveClientConfig(keysPath string, name string) (string, error) {
+	if !services.ValidateCertificateCommonName(name) {
+		return "", services.ErrCertificateIdentity
+	}
 	cfg := clientconfig.New()
 	keysPathCa := filepath.Join(state.GlobalCfg.OVConfigPath, "pki")
 
@@ -297,7 +603,7 @@ func (c *CertificatesController) saveClientConfig(keysPath string, name string) 
 
 	destPath := filepath.Join(state.GlobalCfg.OVConfigPath, "clients", name+".ovpn")
 	if err := SaveToFile(filepath.Join(c.ConfigDir, "openvpn-client-config.tpl"), cfg, destPath); err != nil {
-		logs.Error(err)
+		logs.Error("ERR_CERT_CONFIG_WRITE")
 		return "", err
 	}
 
@@ -329,5 +635,28 @@ func SaveToFile(tplPath string, c clientconfig.Config, destPath string) error {
 		return err
 	}
 
-	return os.WriteFile(destPath, []byte(str), 0644)
+	destinationDirectory := filepath.Dir(destPath)
+	temporaryFile, err := os.CreateTemp(destinationDirectory, ".ovpn-*.tmp")
+	if err != nil {
+		return err
+	}
+	temporaryPath := temporaryFile.Name()
+	defer os.Remove(temporaryPath)
+
+	if err := temporaryFile.Chmod(0o600); err != nil {
+		temporaryFile.Close()
+		return err
+	}
+	if _, err := temporaryFile.WriteString(str); err != nil {
+		temporaryFile.Close()
+		return err
+	}
+	if err := temporaryFile.Sync(); err != nil {
+		temporaryFile.Close()
+		return err
+	}
+	if err := temporaryFile.Close(); err != nil {
+		return err
+	}
+	return os.Rename(temporaryPath, destPath)
 }

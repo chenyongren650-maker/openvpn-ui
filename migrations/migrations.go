@@ -220,4 +220,39 @@ var registeredMigrations = []Migration{
 			`CREATE INDEX idx_totp_identities_status ON totp_identities(status)`,
 		},
 	},
+	{
+		Version: 3,
+		Name:    "certificate_ip_allocations",
+		Up: []string{
+			// Keep one lifecycle allocation row per certificate. The partial
+			// unique index prevents an address from being allocated or held for
+			// release by two certificates while still allowing released history.
+			`CREATE TABLE ip_allocations (
+				id INTEGER PRIMARY KEY AUTOINCREMENT,
+				ip_address TEXT NOT NULL,
+				pool_name TEXT NOT NULL DEFAULT 'restricted',
+				certificate_id INTEGER NOT NULL UNIQUE,
+				status TEXT NOT NULL DEFAULT 'allocated'
+					CHECK (status IN ('allocated', 'pending_release', 'released')),
+				allocated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+				pending_release_at DATETIME,
+				released_at DATETIME,
+				notes TEXT NOT NULL DEFAULT '',
+				FOREIGN KEY (certificate_id) REFERENCES certificates(id)
+					ON UPDATE CASCADE ON DELETE RESTRICT
+			)`,
+			`CREATE UNIQUE INDEX idx_ip_allocations_active_ip
+				ON ip_allocations(ip_address)
+				WHERE status IN ('allocated', 'pending_release')`,
+			`CREATE INDEX idx_ip_allocations_status ON ip_allocations(status)`,
+			`CREATE INDEX idx_ip_allocations_certificate_id
+				ON ip_allocations(certificate_id)`,
+		},
+		Down: []string{
+			// Operational rollback should normally restore the verified
+			// pre-v3 backup created by the migration runner. This statement is
+			// retained for isolated development rollback verification.
+			`DROP TABLE IF EXISTS ip_allocations`,
+		},
+	},
 }

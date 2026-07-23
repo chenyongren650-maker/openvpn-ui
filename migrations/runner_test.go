@@ -28,8 +28,8 @@ func TestUpgradePreservesLegacyTablesAndCreatesFoundationSchema(t *testing.T) {
 	if err != nil {
 		t.Fatalf("run migration: %v", err)
 	}
-	if !reflect.DeepEqual(result.AppliedVersions, []int64{1, 2}) {
-		t.Fatalf("applied versions = %v, want [1 2]", result.AppliedVersions)
+	if !reflect.DeepEqual(result.AppliedVersions, []int64{1, 2, 3}) {
+		t.Fatalf("applied versions = %v, want [1 2 3]", result.AppliedVersions)
 	}
 	if result.BackupPath == "" {
 		t.Fatal("expected a pre-migration backup")
@@ -43,6 +43,7 @@ func TestUpgradePreservesLegacyTablesAndCreatesFoundationSchema(t *testing.T) {
 		"certificates",
 		"totp_identities",
 		"audit_logs",
+		"ip_allocations",
 	} {
 		assertTableExists(t, db, tableName, true)
 	}
@@ -74,8 +75,8 @@ func TestMigrationIsIdempotent(t *testing.T) {
 		t.Fatalf("second migration run: %v", err)
 	}
 
-	if !reflect.DeepEqual(firstResult.AppliedVersions, []int64{1, 2}) {
-		t.Fatalf("first applied versions = %v, want [1 2]", firstResult.AppliedVersions)
+	if !reflect.DeepEqual(firstResult.AppliedVersions, []int64{1, 2, 3}) {
+		t.Fatalf("first applied versions = %v, want [1 2 3]", firstResult.AppliedVersions)
 	}
 	if len(secondResult.AppliedVersions) != 0 {
 		t.Fatalf("second applied versions = %v, want none", secondResult.AppliedVersions)
@@ -98,8 +99,8 @@ func TestMigrationIsIdempotent(t *testing.T) {
 	if err := db.QueryRow(`SELECT COUNT(*) FROM schema_migrations`).Scan(&migrationCount); err != nil {
 		t.Fatalf("count migration rows: %v", err)
 	}
-	if migrationCount != 2 {
-		t.Fatalf("migration row count = %d, want 2", migrationCount)
+	if migrationCount != 3 {
+		t.Fatalf("migration row count = %d, want 3", migrationCount)
 	}
 }
 
@@ -137,7 +138,12 @@ func TestCertificateHistoryCompatibilityMigrationPreservesMetadata(t *testing.T)
 		t.Fatalf("close v1 database: %v", err)
 	}
 
-	result, err := run(context.Background(), databasePath, registeredMigrations, fixedClock)
+	result, err := run(
+		context.Background(),
+		databasePath,
+		registeredMigrations[:2],
+		fixedClock,
+	)
 	if err != nil {
 		t.Fatalf("apply certificate compatibility migration: %v", err)
 	}
@@ -222,13 +228,106 @@ func TestCertificateHistoryCompatibilityMigrationPreservesMetadata(t *testing.T)
 	}
 }
 
+func TestIPAllocationsMigrationSupportsPendingReleaseAndRollback(t *testing.T) {
+	databasePath := filepath.Join(t.TempDir(), "db", "data.db")
+	if _, err := run(
+		context.Background(),
+		databasePath,
+		registeredMigrations[:2],
+		fixedClock,
+	); err != nil {
+		t.Fatalf("initialize v2 database: %v", err)
+	}
+
+	db := openTestDatabase(t, databasePath)
+	for _, statement := range []string{
+		`INSERT INTO certificates (
+			id, common_name, serial_number, status, static_ip
+		) VALUES (1, 'test-client-a', 'A1', 'valid', '10.250.71.10')`,
+		`INSERT INTO certificates (
+			id, common_name, serial_number, status, static_ip
+		) VALUES (2, 'test-client-b', 'A2', 'revoked', '10.250.71.10')`,
+	} {
+		if _, err := db.Exec(statement); err != nil {
+			db.Close()
+			t.Fatalf("seed v2 certificate history: %v", err)
+		}
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("close v2 database: %v", err)
+	}
+
+	result, err := run(context.Background(), databasePath, registeredMigrations, fixedClock)
+	if err != nil {
+		t.Fatalf("apply ip allocation migration: %v", err)
+	}
+	if !reflect.DeepEqual(result.AppliedVersions, []int64{3}) {
+		t.Fatalf("applied versions = %v, want [3]", result.AppliedVersions)
+	}
+	if result.BackupPath == "" {
+		t.Fatal("expected a verified pre-v3 backup")
+	}
+
+	db = openTestDatabase(t, databasePath)
+	assertTableExists(t, db, "ip_allocations", true)
+	if _, err := db.Exec(`INSERT INTO ip_allocations (
+		ip_address, certificate_id, status, pending_release_at
+	) VALUES ('10.250.71.10', 1, 'pending_release', '2026-07-23T00:00:00Z')`); err != nil {
+		db.Close()
+		t.Fatalf("insert pending-release allocation: %v", err)
+	}
+	if _, err := db.Exec(`INSERT INTO ip_allocations (
+		ip_address, certificate_id, status
+	) VALUES ('10.250.71.10', 2, 'allocated')`); err == nil {
+		db.Close()
+		t.Fatal("expected duplicate active address allocation to fail")
+	}
+	if _, err := db.Exec(`INSERT INTO ip_allocations (
+		ip_address, certificate_id, status, released_at
+	) VALUES ('10.250.71.10', 2, 'released', '2026-07-23T00:00:00Z')`); err != nil {
+		db.Close()
+		t.Fatalf("preserve released address history: %v", err)
+	}
+	if _, err := db.Exec(`UPDATE ip_allocations SET status = 'invalid' WHERE certificate_id = 2`); err == nil {
+		db.Close()
+		t.Fatal("expected invalid allocation status to fail")
+	}
+
+	tx, err := db.Begin()
+	if err != nil {
+		db.Close()
+		t.Fatalf("begin isolated rollback verification: %v", err)
+	}
+	for _, statement := range registeredMigrations[2].Down {
+		if _, err := tx.Exec(statement); err != nil {
+			tx.Rollback()
+			db.Close()
+			t.Fatalf("execute v3 rollback statement: %v", err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		db.Close()
+		t.Fatalf("commit isolated rollback verification: %v", err)
+	}
+	assertTableExists(t, db, "ip_allocations", false)
+	assertTableExists(t, db, "certificates", true)
+	if err := db.Close(); err != nil {
+		t.Fatalf("close migrated database: %v", err)
+	}
+
+	backupDB := openTestDatabase(t, result.BackupPath)
+	defer backupDB.Close()
+	assertTableExists(t, backupDB, "ip_allocations", false)
+	assertTableExists(t, backupDB, "certificates", true)
+}
+
 func TestFailedMigrationRollsBackEntirePendingBatch(t *testing.T) {
 	databasePath := filepath.Join(t.TempDir(), "db", "data.db")
 	legacySchema := createLegacyDatabase(t, databasePath)
 
 	failingMigrations := append([]Migration{}, registeredMigrations...)
 	failingMigrations = append(failingMigrations, Migration{
-		Version: 3,
+		Version: 4,
 		Name:    "forced_failure",
 		Up: []string{
 			`CREATE TABLE should_rollback (id INTEGER PRIMARY KEY)`,
@@ -241,7 +340,7 @@ func TestFailedMigrationRollsBackEntirePendingBatch(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected migration failure")
 	}
-	if !strings.Contains(err.Error(), "migration 3 (forced_failure), statement 2") {
+	if !strings.Contains(err.Error(), "migration 4 (forced_failure), statement 2") {
 		t.Fatalf("unexpected migration error: %v", err)
 	}
 	if len(result.AppliedVersions) != 0 {
@@ -258,6 +357,7 @@ func TestFailedMigrationRollsBackEntirePendingBatch(t *testing.T) {
 		"certificates",
 		"totp_identities",
 		"audit_logs",
+		"ip_allocations",
 		"should_rollback",
 	} {
 		assertTableExists(t, db, tableName, false)
@@ -310,6 +410,7 @@ func TestNewDatabaseDoesNotCreateMeaninglessBackup(t *testing.T) {
 		"certificates",
 		"totp_identities",
 		"audit_logs",
+		"ip_allocations",
 	} {
 		assertTableExists(t, db, tableName, true)
 	}
