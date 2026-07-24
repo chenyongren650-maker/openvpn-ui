@@ -405,6 +405,16 @@ func (c *CertificatesController) Revoke() {
 		c.renderCertificateHTTPError(http.StatusForbidden, "error.csrf_invalid")
 		return
 	}
+	if !c.canManageCertificates() {
+		c.recordCertificateOperationAudit(
+			services.CertificateAuditActionRevoke,
+			c.GetString(":id"),
+			"failed",
+			"permission_denied",
+		)
+		c.renderCertificateHTTPError(http.StatusForbidden, "error.admin_required")
+		return
+	}
 	flash := web.NewFlash()
 	certificateID, err := c.certificateID()
 	if err != nil || c.LifecycleService == nil {
@@ -581,6 +591,16 @@ func (c *CertificatesController) Archive() {
 		c.renderCertificateHTTPError(http.StatusForbidden, "error.csrf_invalid")
 		return
 	}
+	if !c.canManageCertificates() {
+		c.recordCertificateOperationAudit(
+			services.CertificateAuditActionArchive,
+			c.GetString(":id"),
+			"failed",
+			"permission_denied",
+		)
+		c.renderCertificateHTTPError(http.StatusForbidden, "error.admin_required")
+		return
+	}
 	flash := web.NewFlash()
 	certificateID, err := c.certificateID()
 	if err != nil || c.LifecycleService == nil {
@@ -634,6 +654,16 @@ func (c *CertificatesController) Renew() {
 			"csrf_invalid",
 		)
 		c.renderCertificateHTTPError(http.StatusForbidden, "error.csrf_invalid")
+		return
+	}
+	if !c.canManageCertificates() {
+		c.recordCertificateOperationAudit(
+			services.CertificateAuditActionRenew,
+			c.GetString(":id"),
+			"failed",
+			"permission_denied",
+		)
+		c.renderCertificateHTTPError(http.StatusForbidden, "error.admin_required")
 		return
 	}
 	flash := web.NewFlash()
@@ -795,6 +825,8 @@ func (c *CertificatesController) lifecycleErrorKey(err error, fallback string) s
 	case errors.Is(err, services.ErrCertificateIdentity),
 		errors.Is(err, services.ErrCertificatePKIMismatch):
 		return "certificate.identity_invalid"
+	case errors.Is(err, services.ErrCertificateIndexCompatibility):
+		return "certificate.legacy_index_incompatible"
 	default:
 		return fallback
 	}

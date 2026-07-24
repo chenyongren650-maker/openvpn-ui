@@ -65,6 +65,7 @@
   "certificate.invalid_state": "The current certificate state does not allow this operation",
   "certificate.ipv4_without_subnet": "Enter an IPv4 address without a subnet mask",
   "certificate.issuer_help": "Applies only to newly created or reset 2FA; the production baseline is ZHISUAN.",
+  "certificate.legacy_index_incompatible": "Legacy certificate index normalization failed; revocation was stopped without running Easy-RSA",
   "certificate.name": "Certificate Name",
   "certificate.name_help": "A certificate may be imported on multiple devices; device notes are optional.",
   "certificate.name_no_spaces": "Certificate name must not contain spaces",

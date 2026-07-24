@@ -670,6 +670,74 @@ func TestRevokeValidatesConfirmationIdentityAndPKI(t *testing.T) {
 	}
 }
 
+func TestCertificateAuthorityCommonNameIsAutomaticallyProtected(t *testing.T) {
+	service, db, _, runner, _ := newLifecycleTestService(
+		t,
+		"valid",
+		"test-client",
+		"A1",
+		"",
+	)
+	defer db.Close()
+
+	if _, err := db.Exec(`INSERT INTO certificates (
+		id, common_name, serial_number, status, technical_expires_at, created_at
+	) VALUES (2, 'LifecycleTestCA', 'B2', 'valid', ?, ?)`,
+		lifecycleTestNow.AddDate(1, 0, 0),
+		lifecycleTestNow,
+	); err != nil {
+		t.Fatalf("seed certificate with CA common name: %v", err)
+	}
+
+	states, err := service.ListCertificateStates(context.Background(), false)
+	if err != nil {
+		t.Fatalf("list certificate states: %v", err)
+	}
+	var protected bool
+	for _, state := range states {
+		if state.ID == 2 {
+			protected = state.Protected
+		}
+	}
+	if !protected {
+		t.Fatal("certificate using the CA common name was not protected")
+	}
+	if _, err := service.DownloadableCertificate(
+		context.Background(),
+		2,
+	); !errors.Is(err, ErrCertificateDownloadBlocked) {
+		t.Fatalf("protected CA-name download error = %v", err)
+	}
+	if _, err := service.RevokeCertificate(
+		context.Background(),
+		2,
+		"LifecycleTestCA",
+		adminLifecycleActor(),
+	); !errors.Is(err, ErrCertificateIdentity) {
+		t.Fatalf("protected CA-name revoke error = %v", err)
+	}
+	if _, err := db.Exec(
+		`UPDATE certificates SET status = 'revoked', revoked_at = ? WHERE id = 2`,
+		lifecycleTestNow,
+	); err != nil {
+		t.Fatalf("prepare protected CA-name archive state: %v", err)
+	}
+	if _, err := service.ArchiveCertificate(
+		context.Background(),
+		2,
+		adminLifecycleActor(),
+	); !errors.Is(err, ErrCertificateIdentity) {
+		t.Fatalf("protected CA-name archive error = %v", err)
+	}
+	if revoke, genCRL := runner.commandCounts(); revoke != 0 || genCRL != 0 {
+		t.Fatalf(
+			"protected CA-name certificate executed Easy-RSA: revoke=%d gen-crl=%d",
+			revoke,
+			genCRL,
+		)
+	}
+}
+
 func TestDownloadableCertificateBlocksUnsafeLifecycleStates(t *testing.T) {
 	service, db, _, _, _ := newLifecycleTestService(
 		t,
@@ -1578,6 +1646,12 @@ func newLifecycleTestService(
 	); err != nil {
 		t.Fatalf("write isolated synthetic certificate: %v", err)
 	}
+	writeSyntheticIssuedCertificate(
+		t,
+		filepath.Join(pkiDir, "ca.crt"),
+		"LifecycleTestCA",
+		"CA01",
+	)
 	if ValidateCertificateCommonName(commonName) && status != "revoked" {
 		writeSyntheticIssuedCertificate(
 			t,
@@ -1680,10 +1754,14 @@ func writeSyntheticIssuedCertificate(
 	}
 	template := &x509.Certificate{
 		SerialNumber: serial,
-		Subject:      pkix.Name{CommonName: commonName},
-		NotBefore:    lifecycleTestNow.Add(-time.Hour),
-		NotAfter:     lifecycleTestNow.AddDate(1, 0, 0),
-		KeyUsage:     x509.KeyUsageDigitalSignature,
+		Subject: pkix.Name{
+			Country:      []string{"CN"},
+			Organization: []string{"Test"},
+			CommonName:   commonName,
+		},
+		NotBefore: lifecycleTestNow.Add(-time.Hour),
+		NotAfter:  lifecycleTestNow.AddDate(1, 0, 0),
+		KeyUsage:  x509.KeyUsageDigitalSignature,
 	}
 	der, err := x509.CreateCertificate(
 		rand.Reader,

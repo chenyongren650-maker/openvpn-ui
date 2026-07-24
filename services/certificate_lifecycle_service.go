@@ -42,14 +42,17 @@ const (
 )
 
 var (
-	ErrCertificateNotFound        = errors.New("certificate not found")
-	ErrCertificateForbidden       = errors.New("certificate lifecycle action requires administrator permission")
-	ErrCertificateInvalidState    = errors.New("certificate lifecycle state does not allow this action")
-	ErrCertificateConfirmation    = errors.New("certificate name confirmation does not match")
-	ErrCertificateIdentity        = errors.New("certificate identity is invalid")
-	ErrCertificatePKIMismatch     = errors.New("certificate database and PKI identities do not match")
-	ErrCertificateCommand         = errors.New("certificate revocation command failed")
-	ErrCertificateCRL             = errors.New("certificate revocation list generation failed")
+	ErrCertificateNotFound           = errors.New("certificate not found")
+	ErrCertificateForbidden          = errors.New("certificate lifecycle action requires administrator permission")
+	ErrCertificateInvalidState       = errors.New("certificate lifecycle state does not allow this action")
+	ErrCertificateConfirmation       = errors.New("certificate name confirmation does not match")
+	ErrCertificateIdentity           = errors.New("certificate identity is invalid")
+	ErrCertificatePKIMismatch        = errors.New("certificate database and PKI identities do not match")
+	ErrCertificateCommand            = errors.New("certificate revocation command failed")
+	ErrCertificateCRL                = errors.New("certificate revocation list generation failed")
+	ErrCertificateIndexCompatibility = errors.New(
+		"certificate legacy index metadata normalization failed",
+	)
 	ErrCertificateDownloadBlocked = errors.New("certificate configuration download is blocked")
 	ErrCertificateTOTPQRBlocked   = errors.New("certificate TOTP QR code view is blocked")
 	ErrCertificateRenewal         = errors.New("certificate renewal failed")
@@ -229,6 +232,7 @@ type CertificateLifecycleService struct {
 	indexPath            string
 	crlPath              string
 	protectedCommonNames map[string]struct{}
+	protectedSerials     map[string]struct{}
 	runner               lifecycleCommandRunner
 	disconnector         lifecycleDisconnector
 	mu                   sync.Mutex
@@ -259,11 +263,23 @@ func NewCertificateLifecycleService(
 		return nil, errors.New("Easy-RSA binary must be inside its configured working directory")
 	}
 	protected := map[string]struct{}{"server": {}}
+	protectedSerials := make(map[string]struct{})
 	for _, commonName := range config.ProtectedCommonNames {
 		commonName = strings.TrimSpace(commonName)
 		if commonName != "" {
 			protected[strings.ToLower(commonName)] = struct{}{}
 		}
+	}
+	caPath := filepath.Join(pkiDir, "ca.crt")
+	caSerial, caCommonName, err := readCertificateIdentity(caPath)
+	switch {
+	case err == nil:
+		protected[strings.ToLower(caCommonName)] = struct{}{}
+		protectedSerials[normalizeCertificateSerial(caSerial)] = struct{}{}
+	case errors.Is(err, os.ErrNotExist):
+		// A new isolated PKI may initialize after the UI starts.
+	default:
+		return nil, fmt.Errorf("read certificate authority identity: %w", err)
 	}
 
 	return &CertificateLifecycleService{
@@ -274,6 +290,7 @@ func NewCertificateLifecycleService(
 		indexPath:            filepath.Join(pkiDir, "index.txt"),
 		crlPath:              filepath.Join(pkiDir, "crl.pem"),
 		protectedCommonNames: protected,
+		protectedSerials:     protectedSerials,
 		runner:               osLifecycleCommandRunner{},
 		disconnector: managementLifecycleDisconnector{
 			network: config.ManagementNetwork,
@@ -320,6 +337,17 @@ func ValidateCertificateSerial(serial string) bool {
 
 func (s *CertificateLifecycleService) IsProtectedCommonName(commonName string) bool {
 	_, protected := s.protectedCommonNames[strings.ToLower(commonName)]
+	return protected
+}
+
+func (s *CertificateLifecycleService) isProtectedCertificate(
+	commonName string,
+	serialNumber string,
+) bool {
+	if s.IsProtectedCommonName(commonName) {
+		return true
+	}
+	_, protected := s.protectedSerials[normalizeCertificateSerial(serialNumber)]
 	return protected
 }
 
@@ -457,7 +485,10 @@ func (s *CertificateLifecycleService) ListCertificateStates(
 		if err != nil {
 			return nil, fmt.Errorf("scan certificate lifecycle state: %w", err)
 		}
-		state.Protected = s.IsProtectedCommonName(state.CommonName)
+		state.Protected = s.isProtectedCertificate(
+			state.CommonName,
+			state.SerialNumber,
+		)
 		states = append(states, state)
 	}
 	if err := rows.Err(); err != nil {
@@ -761,6 +792,16 @@ func (s *CertificateLifecycleService) ArchiveCertificate(
 		}
 		return ArchiveCertificateResult{AlreadyArchived: true}, nil
 	}
+	if state.Protected {
+		return ArchiveCertificateResult{}, s.auditFailure(
+			ctx,
+			actor,
+			auditActionArchive,
+			certificateID,
+			"invalid_identity",
+			ErrCertificateIdentity,
+		)
+	}
 	if state.Status != "revoked" {
 		return ArchiveCertificateResult{}, s.auditFailure(
 			ctx, actor, auditActionArchive, certificateID, "invalid_state", ErrCertificateInvalidState,
@@ -861,7 +902,7 @@ func (s *CertificateLifecycleService) RenewCertificate(
 	}
 	if !ValidateCertificateCommonName(state.CommonName) ||
 		!ValidateCertificateSerial(state.SerialNumber) ||
-		s.IsProtectedCommonName(state.CommonName) {
+		state.Protected {
 		return RenewCertificateResult{}, s.auditFailure(
 			ctx,
 			actor,
@@ -1138,7 +1179,7 @@ func (s *CertificateLifecycleService) RevokeCertificate(
 	}
 	if !ValidateCertificateCommonName(state.CommonName) ||
 		!ValidateCertificateSerial(state.SerialNumber) ||
-		s.IsProtectedCommonName(state.CommonName) {
+		state.Protected {
 		return RevokeCertificateResult{}, s.auditFailure(
 			ctx, actor, auditActionRevoke, certificateID, "invalid_identity",
 			ErrCertificateIdentity,
@@ -1188,6 +1229,19 @@ func (s *CertificateLifecycleService) RevokeCertificate(
 				certificateID,
 				"revoke_target_mismatch",
 				ErrCertificatePKIMismatch,
+			)
+		}
+		if _, err := s.normalizeLegacyIndexMetadata(
+			state,
+			revokeCommand,
+		); err != nil {
+			return RevokeCertificateResult{}, s.auditFailure(
+				ctx,
+				actor,
+				auditActionRevoke,
+				certificateID,
+				"index_compatibility_failed",
+				ErrCertificateIndexCompatibility,
 			)
 		}
 		if err := s.runEasyRSA(
@@ -1434,24 +1488,32 @@ func (s *CertificateLifecycleService) certificateFileMatchesState(
 }
 
 func readCertificateIdentity(path string) (string, string, error) {
-	data, err := os.ReadFile(path)
+	certificate, err := readCertificate(path)
 	if err != nil {
 		return "", "", err
-	}
-	block, _ := pem.Decode(data)
-	if block == nil || block.Type != "CERTIFICATE" {
-		return "", "", errors.New("certificate file does not contain a PEM certificate")
-	}
-	certificate, err := x509.ParseCertificate(block.Bytes)
-	if err != nil {
-		return "", "", err
-	}
-	if certificate.SerialNumber == nil || certificate.SerialNumber.Sign() < 0 {
-		return "", "", errors.New("certificate file has an invalid serial number")
 	}
 	return strings.ToUpper(certificate.SerialNumber.Text(16)),
 		certificate.Subject.CommonName,
 		nil
+}
+
+func readCertificate(path string) (*x509.Certificate, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	block, _ := pem.Decode(data)
+	if block == nil || block.Type != "CERTIFICATE" {
+		return nil, errors.New("certificate file does not contain a PEM certificate")
+	}
+	certificate, err := x509.ParseCertificate(block.Bytes)
+	if err != nil {
+		return nil, err
+	}
+	if certificate.SerialNumber == nil || certificate.SerialNumber.Sign() < 0 {
+		return nil, errors.New("certificate file has an invalid serial number")
+	}
+	return certificate, nil
 }
 
 func normalizeCertificateSerial(serial string) string {
@@ -1611,7 +1673,10 @@ func (s *CertificateLifecycleService) loadCertificate(
 	if err != nil {
 		return CertificateState{}, fmt.Errorf("read certificate lifecycle state: %w", err)
 	}
-	state.Protected = s.IsProtectedCommonName(state.CommonName)
+	state.Protected = s.isProtectedCertificate(
+		state.CommonName,
+		state.SerialNumber,
+	)
 	return state, nil
 }
 
