@@ -10,6 +10,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/beego/beego/v2/core/logs"
@@ -24,7 +25,12 @@ const (
 
 var safeCertificateNamePattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._@-]{0,127}$`)
 
-var ErrInvalidCertificateInput = errors.New("certificate input is invalid")
+var (
+	ErrInvalidCertificateInput       = errors.New("certificate input is invalid")
+	ErrCertificateAlreadyExists      = errors.New("a certificate already exists for this name")
+	ErrCertificateCreationIncomplete = errors.New("certificate creation requires recovery")
+	certificateCreationMu            sync.Mutex
+)
 
 type CertificateCreationRequest struct {
 	Name       string
@@ -152,9 +158,29 @@ func trim(s string) string {
 }
 
 func CreateCertificate(request CertificateCreationRequest) error {
+	certificateCreationMu.Lock()
+	defer certificateCreationMu.Unlock()
+
+	return createCertificate(
+		request,
+		state.GlobalCfg.OVConfigPath,
+		runCertificateScript,
+	)
+}
+
+type certificateCreationRunner func(certificateScriptCommand) error
+
+func createCertificate(
+	request CertificateCreationRequest,
+	openVPNPath string,
+	run certificateCreationRunner,
+) error {
 	command, err := buildCreateCertificateCommand(request)
 	if err != nil {
 		return err
+	}
+	if run == nil || strings.TrimSpace(openVPNPath) == "" {
+		return ErrInvalidCertificateInput
 	}
 
 	logs.Info(
@@ -163,38 +189,233 @@ func CreateCertificate(request CertificateCreationRequest) error {
 		request.StaticIP,
 		request.ExpireDays,
 	)
-	path := filepath.Join(state.GlobalCfg.OVConfigPath, "pki", "index.txt")
-	existsError := errors.New("a certificate already exists for this name")
-	certs, err := ReadCerts(path)
+	indexPath := filepath.Join(openVPNPath, "pki", "index.txt")
+	certs, err := ReadCerts(indexPath)
 	if err != nil {
 		return errors.New("read certificate index")
 	}
-	for _, v := range certs {
-		if v.Details.Name == request.Name || v.Details.CN == request.Name {
-			return existsError
+	if existing := findCertificateByName(certs, request.Name); existing != nil {
+		if certificateCreationMetadataMatches(existing, request) {
+			complete := certificateCreationArtifactsComplete(openVPNPath, request)
+			if complete &&
+				certificateCreationMarkerMatches(openVPNPath, request) {
+				return nil
+			}
+			if complete {
+				return ErrCertificateAlreadyExists
+			}
+			return ErrCertificateCreationIncomplete
 		}
+		return ErrCertificateAlreadyExists
 	}
 
-	if err := runCertificateScript(command); err != nil {
-		logs.Error("ERR_CERT_CREATE_COMMAND")
-		return err
+	staticClientCreated, err := prepareStaticClientConfiguration(
+		openVPNPath,
+		request,
+	)
+	if err != nil {
+		logs.Error("ERR_CERT_STATIC_CONFIG_WRITE")
+		return errors.New("prepare static client configuration")
 	}
-	if request.StaticIP != "" {
-		staticClientPath := filepath.Join(
-			state.GlobalCfg.OVConfigPath,
-			"staticclients",
-			request.Name,
+
+	commandErr := run(command)
+	issued, complete, marker, reconcileErr := inspectCertificateCreation(
+		indexPath,
+		openVPNPath,
+		request,
+	)
+	if reconcileErr != nil {
+		logs.Error("ERR_CERT_CREATE_RECONCILE")
+		return fmt.Errorf(
+			"%w: certificate issuance state could not be verified",
+			ErrCertificateCreationIncomplete,
 		)
-		if err := writeAtomicFile(
-			staticClientPath,
-			[]byte("ifconfig-push "+request.StaticIP+" 255.255.255.0\n"),
-			0o600,
-		); err != nil {
-			logs.Error("ERR_CERT_STATIC_CONFIG_WRITE")
-			return errors.New("write static client configuration")
+	}
+	if commandErr != nil {
+		logs.Error("ERR_CERT_CREATE_COMMAND")
+		if !issued {
+			if rollbackErr := rollbackStaticClientConfiguration(
+				openVPNPath,
+				request,
+				staticClientCreated,
+			); rollbackErr != nil {
+				return fmt.Errorf(
+					"certificate command failed and static configuration rollback failed: %w",
+					rollbackErr,
+				)
+			}
+			return commandErr
 		}
+		if complete && marker {
+			return nil
+		}
+		return ErrCertificateCreationIncomplete
+	}
+
+	if !issued {
+		if rollbackErr := rollbackStaticClientConfiguration(
+			openVPNPath,
+			request,
+			staticClientCreated,
+		); rollbackErr != nil {
+			return fmt.Errorf(
+				"certificate verification failed and static configuration rollback failed: %w",
+				rollbackErr,
+			)
+		}
+		return ErrCertificateCreationIncomplete
+	}
+	if !complete || !marker {
+		return ErrCertificateCreationIncomplete
 	}
 	return nil
+}
+
+func findCertificateByName(certs []*Cert, name string) *Cert {
+	var match *Cert
+	for _, certificate := range certs {
+		if certificate == nil || certificate.Details == nil {
+			continue
+		}
+		if certificate.Details.Name == name || certificate.Details.CN == name {
+			match = certificate
+		}
+	}
+	return match
+}
+
+func certificateCreationMetadataMatches(
+	certificate *Cert,
+	request CertificateCreationRequest,
+) bool {
+	if certificate == nil || certificate.Details == nil ||
+		certificate.Details.CN != request.Name {
+		return false
+	}
+	return true
+}
+
+func inspectCertificateCreation(
+	indexPath string,
+	openVPNPath string,
+	request CertificateCreationRequest,
+) (bool, bool, bool, error) {
+	certificates, err := ReadCerts(indexPath)
+	if err != nil {
+		return false, false, false, err
+	}
+	certificate := findCertificateByName(certificates, request.Name)
+	if certificate == nil {
+		return false, false, false, nil
+	}
+	if !certificateCreationMetadataMatches(certificate, request) {
+		return true, false, false, ErrCertificateAlreadyExists
+	}
+	return true,
+		certificateCreationArtifactsComplete(openVPNPath, request),
+		certificateCreationMarkerMatches(openVPNPath, request),
+		nil
+}
+
+func certificateCreationArtifactsComplete(
+	openVPNPath string,
+	request CertificateCreationRequest,
+) bool {
+	requiredPaths := []string{
+		filepath.Join(openVPNPath, "clients", request.Name+".ovpn"),
+	}
+	if request.TFAName != "" {
+		requiredPaths = append(
+			requiredPaths,
+			filepath.Join(openVPNPath, "clients", request.Name+".png"),
+		)
+	}
+	for _, path := range requiredPaths {
+		info, err := os.Stat(path)
+		if err != nil || !info.Mode().IsRegular() {
+			return false
+		}
+	}
+	return true
+}
+
+func certificateCreationMarkerMatches(
+	openVPNPath string,
+	request CertificateCreationRequest,
+) bool {
+	data, err := os.ReadFile(
+		certificateCreationMarkerPath(openVPNPath, request.Name),
+	)
+	return err == nil && string(data) == certificateCreationMarkerContent(request)
+}
+
+func certificateCreationMarkerPath(openVPNPath string, name string) string {
+	return filepath.Join(
+		openVPNPath,
+		"clients",
+		"."+name+".creation-complete",
+	)
+}
+
+func certificateCreationMarkerContent(request CertificateCreationRequest) string {
+	staticIP := request.StaticIP
+	if staticIP == "" {
+		staticIP = "dynamic.pool"
+	}
+	tfaName := request.TFAName
+	if tfaName == "" {
+		tfaName = "none"
+	}
+	return fmt.Sprintf(
+		"name=%s\nstatic_ip=%s\ntfa_name=%s\nissuer=%s\n",
+		request.Name,
+		staticIP,
+		tfaName,
+		request.TFAIssuer,
+	)
+}
+
+func prepareStaticClientConfiguration(
+	openVPNPath string,
+	request CertificateCreationRequest,
+) (bool, error) {
+	if request.StaticIP == "" {
+		return false, nil
+	}
+	path := filepath.Join(openVPNPath, "staticclients", request.Name)
+	expected := []byte("ifconfig-push " + request.StaticIP + " 255.255.255.0\n")
+	existing, err := os.ReadFile(path)
+	if err == nil {
+		if string(existing) != string(expected) {
+			return false, errors.New("static client configuration conflicts with request")
+		}
+		if err := os.Chmod(path, 0o600); err != nil {
+			return false, err
+		}
+		return false, nil
+	}
+	if !errors.Is(err, os.ErrNotExist) {
+		return false, err
+	}
+	if err := writeAtomicFileExclusive(path, expected, 0o600); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+func rollbackStaticClientConfiguration(
+	openVPNPath string,
+	request CertificateCreationRequest,
+	created bool,
+) error {
+	if !created || request.StaticIP == "" {
+		return nil
+	}
+	err := os.Remove(filepath.Join(openVPNPath, "staticclients", request.Name))
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	return err
 }
 
 func Restart() error {
@@ -324,4 +545,34 @@ func writeAtomicFile(path string, data []byte, mode os.FileMode) error {
 		return err
 	}
 	return os.Rename(temporaryPath, path)
+}
+
+func writeAtomicFileExclusive(path string, data []byte, mode os.FileMode) error {
+	directory := filepath.Dir(path)
+	temporaryFile, err := os.CreateTemp(directory, ".certificate-*.tmp")
+	if err != nil {
+		return err
+	}
+	temporaryPath := temporaryFile.Name()
+	defer os.Remove(temporaryPath)
+
+	if err := temporaryFile.Chmod(mode); err != nil {
+		temporaryFile.Close()
+		return err
+	}
+	if _, err := temporaryFile.Write(data); err != nil {
+		temporaryFile.Close()
+		return err
+	}
+	if err := temporaryFile.Sync(); err != nil {
+		temporaryFile.Close()
+		return err
+	}
+	if err := temporaryFile.Close(); err != nil {
+		return err
+	}
+	if err := os.Link(temporaryPath, path); err != nil {
+		return err
+	}
+	return nil
 }

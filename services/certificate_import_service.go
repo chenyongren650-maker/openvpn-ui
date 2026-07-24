@@ -31,6 +31,7 @@ type certificateMetadata struct {
 	SerialNumber       string
 	Status             string
 	StaticIP           *string
+	TFAName            *string
 	TechnicalExpiresAt time.Time
 	RevokedAt          *time.Time
 }
@@ -148,11 +149,18 @@ func parseCertificateIndexLine(
 		)
 	}
 
-	commonName, localIP, err := parseCertificateIndexSubject(fields[5], lineNumber)
+	commonName, localIP, tfaName, err := parseCertificateIndexSubject(
+		fields[5],
+		lineNumber,
+	)
 	if err != nil {
 		return record, err
 	}
 	staticIP, err := normalizeCertificateStaticIP(localIP, lineNumber)
+	if err != nil {
+		return record, err
+	}
+	normalizedTFAName, err := normalizeCertificateTFAName(tfaName, lineNumber)
 	if err != nil {
 		return record, err
 	}
@@ -185,6 +193,7 @@ func parseCertificateIndexLine(
 		SerialNumber:       serialNumber,
 		Status:             status,
 		StaticIP:           staticIP,
+		TFAName:            normalizedTFAName,
 		TechnicalExpiresAt: expiresAt.UTC(),
 		RevokedAt:          revokedAt,
 	}
@@ -217,10 +226,13 @@ func parseCertificateIndexTime(value string, lineNumber int, fieldName string) (
 	)
 }
 
-func parseCertificateIndexSubject(subject string, lineNumber int) (string, string, error) {
+func parseCertificateIndexSubject(
+	subject string,
+	lineNumber int,
+) (string, string, string, error) {
 	parts, err := splitCertificateSubject(subject)
 	if err != nil {
-		return "", "", fmt.Errorf(
+		return "", "", "", fmt.Errorf(
 			"certificate index line %d has an invalid subject",
 			lineNumber,
 		)
@@ -228,13 +240,14 @@ func parseCertificateIndexSubject(subject string, lineNumber int) (string, strin
 
 	var commonName string
 	var localIP string
+	var tfaName string
 	for _, part := range parts {
 		if part == "" {
 			continue
 		}
 		key, value, found := strings.Cut(part, "=")
 		if !found || strings.TrimSpace(key) == "" {
-			return "", "", fmt.Errorf(
+			return "", "", "", fmt.Errorf(
 				"certificate index line %d has an invalid subject attribute",
 				lineNumber,
 			)
@@ -243,7 +256,7 @@ func parseCertificateIndexSubject(subject string, lineNumber int) (string, strin
 		switch key {
 		case "CN":
 			if commonName != "" && commonName != value {
-				return "", "", fmt.Errorf(
+				return "", "", "", fmt.Errorf(
 					"certificate index line %d has conflicting common names",
 					lineNumber,
 				)
@@ -251,21 +264,29 @@ func parseCertificateIndexSubject(subject string, lineNumber int) (string, strin
 			commonName = value
 		case "LocalIP":
 			if localIP != "" && localIP != value {
-				return "", "", fmt.Errorf(
+				return "", "", "", fmt.Errorf(
 					"certificate index line %d has conflicting static IP metadata",
 					lineNumber,
 				)
 			}
 			localIP = value
+		case "2FAName":
+			if tfaName != "" && tfaName != value {
+				return "", "", "", fmt.Errorf(
+					"certificate index line %d has conflicting 2FA identity metadata",
+					lineNumber,
+				)
+			}
+			tfaName = value
 		}
 	}
 	if commonName == "" {
-		return "", "", fmt.Errorf(
+		return "", "", "", fmt.Errorf(
 			"certificate index line %d has no common name",
 			lineNumber,
 		)
 	}
-	return commonName, localIP, nil
+	return commonName, localIP, tfaName, nil
 }
 
 func splitCertificateSubject(subject string) ([]string, error) {
@@ -310,6 +331,20 @@ func normalizeCertificateStaticIP(value string, lineNumber int) (*string, error)
 	return &normalized, nil
 }
 
+func normalizeCertificateTFAName(value string, lineNumber int) (*string, error) {
+	value = strings.TrimSpace(value)
+	if value == "" || strings.EqualFold(value, "none") {
+		return nil, nil
+	}
+	if !ValidateCertificateCommonName(value) {
+		return nil, fmt.Errorf(
+			"certificate index line %d has invalid 2FA identity metadata",
+			lineNumber,
+		)
+	}
+	return &value, nil
+}
+
 func importCertificateMetadata(
 	ctx context.Context,
 	db *sql.DB,
@@ -319,6 +354,15 @@ func importCertificateMetadata(
 	var result CertificateImportResult
 	if db == nil {
 		return result, errors.New("certificate metadata database is nil")
+	}
+
+	latestSerialByCommonName := make(map[string]string)
+	latestTFANameByCommonName := make(map[string]string)
+	for _, record := range records {
+		latestSerialByCommonName[record.CommonName] = record.SerialNumber
+		if record.TFAName != nil {
+			latestTFANameByCommonName[record.CommonName] = *record.TFAName
+		}
 	}
 
 	tx, err := db.BeginTx(ctx, nil)
@@ -414,6 +458,51 @@ func importCertificateMetadata(
 		}
 	}
 
+	for commonName, tfaName := range latestTFANameByCommonName {
+		targetSerial := latestSerialByCommonName[commonName]
+		var certificateID int64
+		if err := tx.QueryRowContext(
+			ctx,
+			`SELECT id FROM certificates
+			WHERE serial_number = ? COLLATE NOCASE`,
+			targetSerial,
+		).Scan(&certificateID); err != nil {
+			return CertificateImportResult{}, fmt.Errorf(
+				"read current certificate ID for 2FA identity metadata: %w",
+				err,
+			)
+		}
+
+		var databaseTFAName string
+		err := tx.QueryRowContext(
+			ctx,
+			`SELECT tfa_name FROM totp_identities WHERE certificate_id = ?`,
+			certificateID,
+		).Scan(&databaseTFAName)
+		if err == nil {
+			continue
+		}
+		if !errors.Is(err, sql.ErrNoRows) {
+			return CertificateImportResult{}, fmt.Errorf(
+				"read current certificate 2FA identity metadata: %w",
+				err,
+			)
+		}
+		if err := upsertTOTPIdentityMetadata(
+			ctx,
+			tx,
+			certificateID,
+			tfaName,
+			"",
+			importedAt,
+		); err != nil {
+			return CertificateImportResult{}, fmt.Errorf(
+				"upsert certificate 2FA identity metadata: %w",
+				err,
+			)
+		}
+	}
+
 	if err := tx.Commit(); err != nil {
 		return CertificateImportResult{}, fmt.Errorf(
 			"commit certificate metadata import: %w",
@@ -421,6 +510,122 @@ func importCertificateMetadata(
 		)
 	}
 	return result, nil
+}
+
+func upsertTOTPIdentityMetadata(
+	ctx context.Context,
+	tx *sql.Tx,
+	certificateID int64,
+	tfaName string,
+	issuer string,
+	createdAt time.Time,
+) error {
+	if certificateID <= 0 || !ValidateCertificateCommonName(tfaName) {
+		return errors.New("invalid 2FA identity metadata")
+	}
+
+	var identityID int64
+	var existingCertificateID int64
+	err := tx.QueryRowContext(
+		ctx,
+		`SELECT id, certificate_id
+		FROM totp_identities
+		WHERE tfa_name = ?`,
+		tfaName,
+	).Scan(&identityID, &existingCertificateID)
+	if err == nil {
+		if existingCertificateID != certificateID {
+			var existingCommonName string
+			var requestedCommonName string
+			if err := tx.QueryRowContext(
+				ctx,
+				`SELECT common_name FROM certificates WHERE id = ?`,
+				existingCertificateID,
+			).Scan(&existingCommonName); err != nil {
+				return err
+			}
+			if err := tx.QueryRowContext(
+				ctx,
+				`SELECT common_name FROM certificates WHERE id = ?`,
+				certificateID,
+			).Scan(&requestedCommonName); err != nil {
+				return err
+			}
+			if existingCommonName != requestedCommonName {
+				return errors.New("2FA identity is assigned to a different certificate name")
+			}
+		}
+		var conflictingIdentityID int64
+		conflictErr := tx.QueryRowContext(
+			ctx,
+			`SELECT id FROM totp_identities
+			WHERE certificate_id = ? AND id <> ?`,
+			certificateID,
+			identityID,
+		).Scan(&conflictingIdentityID)
+		if conflictErr == nil {
+			return errors.New("certificate already has different 2FA identity metadata")
+		}
+		if !errors.Is(conflictErr, sql.ErrNoRows) {
+			return conflictErr
+		}
+		_, err = tx.ExecContext(
+			ctx,
+			`UPDATE totp_identities
+			SET certificate_id = ?,
+				issuer = CASE WHEN ? <> '' THEN ? ELSE issuer END,
+				status = 'active'
+			WHERE id = ?`,
+			certificateID,
+			issuer,
+			issuer,
+			identityID,
+		)
+		return err
+	}
+	if !errors.Is(err, sql.ErrNoRows) {
+		return err
+	}
+
+	err = tx.QueryRowContext(
+		ctx,
+		`SELECT id FROM totp_identities WHERE certificate_id = ?`,
+		certificateID,
+	).Scan(&identityID)
+	if err == nil {
+		_, err = tx.ExecContext(
+			ctx,
+			`UPDATE totp_identities
+			SET tfa_name = ?,
+				issuer = CASE WHEN ? <> '' THEN ? ELSE issuer END,
+				status = 'active'
+			WHERE id = ?`,
+			tfaName,
+			issuer,
+			issuer,
+			identityID,
+		)
+		return err
+	}
+	if !errors.Is(err, sql.ErrNoRows) {
+		return err
+	}
+
+	_, err = tx.ExecContext(
+		ctx,
+		`INSERT INTO totp_identities (
+			certificate_id,
+			tfa_name,
+			issuer,
+			status,
+			created_at
+		) VALUES (?, ?, ?, 'active', ?)`,
+		certificateID,
+		tfaName,
+		issuer,
+		createdAt.UTC(),
+	)
+	return err
 }
 
 func nullableStringValue(value *string) any {

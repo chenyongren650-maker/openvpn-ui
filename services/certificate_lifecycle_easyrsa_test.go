@@ -91,7 +91,19 @@ func TestEasyRSARevokeAndArchiveAgainstIsolatedPKI(t *testing.T) {
 		adminLifecycleActor(),
 	)
 	if err != nil {
-		t.Fatalf("renew isolated Easy-RSA certificate: %v", err)
+		var errorSummary string
+		if auditErr := db.QueryRow(`SELECT error_summary FROM audit_logs
+			WHERE action = ?
+			ORDER BY id DESC LIMIT 1`,
+			CertificateAuditActionRenew,
+		).Scan(&errorSummary); auditErr != nil {
+			errorSummary = "audit_unavailable"
+		}
+		t.Fatalf(
+			"renew isolated Easy-RSA certificate: %v (stage %s)",
+			err,
+			errorSummary,
+		)
 	}
 	renewedCertificateID := renewalResult.NewCertificateID
 	if renewedCertificateID <= 0 {

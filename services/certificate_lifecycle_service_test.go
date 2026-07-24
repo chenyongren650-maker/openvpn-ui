@@ -714,7 +714,7 @@ func TestRenewCertificateSyncsMetadataAndIsIdempotent(t *testing.T) {
 		"valid",
 		"renew-test-client",
 		"A1",
-		"10.250.71.10",
+		"",
 	)
 	defer db.Close()
 	if _, err := db.Exec(`INSERT INTO ip_allocations (
@@ -724,12 +724,14 @@ func TestRenewCertificateSyncsMetadataAndIsIdempotent(t *testing.T) {
 	); err != nil {
 		t.Fatalf("seed renewal static IP allocation: %v", err)
 	}
-	if _, err := db.Exec(`INSERT INTO totp_identities (
-		certificate_id, tfa_name, issuer, status, created_at
-	) VALUES (1, 'user@example.invalid', 'ZHISUAN', 'active', ?)`,
-		lifecycleTestNow,
+	if _, err := service.SyncCreatedCertificateMetadata(
+		context.Background(),
+		"renew-test-client",
+		"10.250.71.10",
+		"user@example.invalid",
+		"ZHISUAN",
 	); err != nil {
-		t.Fatalf("seed renewal TOTP identity metadata: %v", err)
+		t.Fatalf("import renewal TOTP identity metadata: %v", err)
 	}
 
 	runner.renewal = func() error {
@@ -1127,6 +1129,189 @@ func TestPerformCertificateDownloadStopsWhenAuditIsUnavailable(t *testing.T) {
 	if executorCalled {
 		t.Fatal("download delivered configuration before the audit record existed")
 	}
+}
+
+func TestPerformCertificateTOTPQRCodeViewRequiresAdminAndConfirmation(t *testing.T) {
+	service, db, _, _, _ := newLifecycleTestService(
+		t,
+		"valid",
+		"qr-permission-client",
+		"A1",
+		"",
+	)
+	defer db.Close()
+	if _, err := db.Exec(`INSERT INTO totp_identities (
+		certificate_id, tfa_name, issuer, status, created_at
+	) VALUES (1, 'qr-user@example.invalid', 'ZHISUAN', 'active', ?)`,
+		lifecycleTestNow,
+	); err != nil {
+		t.Fatalf("seed QR identity metadata: %v", err)
+	}
+
+	executorCalled := false
+	err := service.PerformCertificateTOTPQRCodeView(
+		context.Background(),
+		1,
+		"qr-permission-client",
+		CertificateLifecycleActor{
+			UserID:    2,
+			SourceIP:  "192.0.2.20",
+			RequestID: "request-qr-non-admin",
+		},
+		func(CertificateState) error {
+			executorCalled = true
+			return nil
+		},
+	)
+	if !errors.Is(err, ErrCertificateForbidden) {
+		t.Fatalf("QR permission error = %v", err)
+	}
+	if executorCalled {
+		t.Fatal("denied QR view executed image delivery")
+	}
+
+	err = service.PerformCertificateTOTPQRCodeView(
+		context.Background(),
+		1,
+		"wrong-client",
+		adminLifecycleActor(),
+		func(CertificateState) error {
+			executorCalled = true
+			return nil
+		},
+	)
+	if !errors.Is(err, ErrCertificateConfirmation) {
+		t.Fatalf("QR confirmation error = %v", err)
+	}
+	if executorCalled {
+		t.Fatal("QR confirmation mismatch executed image delivery")
+	}
+	assertLifecycleAuditResults(
+		t,
+		db,
+		auditActionTOTPQR,
+		[]string{"failed", "failed"},
+	)
+	assertLatestAuditError(t, db, "confirmation_mismatch")
+}
+
+func TestPerformCertificateTOTPQRCodeViewAuditsSuccessfulDelivery(t *testing.T) {
+	service, db, _, _, _ := newLifecycleTestService(
+		t,
+		"valid",
+		"qr-success-client",
+		"A1",
+		"",
+	)
+	defer db.Close()
+	if _, err := db.Exec(`INSERT INTO totp_identities (
+		certificate_id, tfa_name, issuer, status, created_at
+	) VALUES (1, 'qr-success@example.invalid', 'ZHISUAN', 'active', ?)`,
+		lifecycleTestNow,
+	); err != nil {
+		t.Fatalf("seed successful QR identity metadata: %v", err)
+	}
+
+	executorCalled := false
+	err := service.PerformCertificateTOTPQRCodeView(
+		context.Background(),
+		1,
+		"qr-success-client",
+		adminLifecycleActor(),
+		func(state CertificateState) error {
+			executorCalled = true
+			if state.TFAName != "qr-success@example.invalid" {
+				t.Fatalf("QR delivery TFA name = %q", state.TFAName)
+			}
+			return nil
+		},
+	)
+	if err != nil {
+		t.Fatalf("deliver TOTP QR code: %v", err)
+	}
+	if !executorCalled {
+		t.Fatal("successful QR view did not execute image delivery")
+	}
+	assertLifecycleAuditResults(
+		t,
+		db,
+		auditActionTOTPQR,
+		[]string{CertificateAuditResultStarted, "success"},
+	)
+}
+
+func TestPerformCertificateTOTPQRCodeViewStopsWhenAuditIsUnavailable(t *testing.T) {
+	service, db, _, _, _ := newLifecycleTestService(
+		t,
+		"valid",
+		"qr-audit-client",
+		"A1",
+		"",
+	)
+	defer db.Close()
+	if _, err := db.Exec(`INSERT INTO totp_identities (
+		certificate_id, tfa_name, issuer, status, created_at
+	) VALUES (1, 'qr-audit@example.invalid', 'ZHISUAN', 'active', ?)`,
+		lifecycleTestNow,
+	); err != nil {
+		t.Fatalf("seed audit failure QR identity metadata: %v", err)
+	}
+	if _, err := db.Exec(`CREATE TRIGGER reject_qr_audit
+		BEFORE INSERT ON audit_logs
+		WHEN NEW.action = 'certificate.totp_qr_view'
+		BEGIN
+			SELECT RAISE(ABORT, 'forced QR audit failure');
+		END`); err != nil {
+		t.Fatalf("create QR audit failure trigger: %v", err)
+	}
+
+	executorCalled := false
+	err := service.PerformCertificateTOTPQRCodeView(
+		context.Background(),
+		1,
+		"qr-audit-client",
+		adminLifecycleActor(),
+		func(CertificateState) error {
+			executorCalled = true
+			return nil
+		},
+	)
+	if err == nil {
+		t.Fatal("QR view continued while the mandatory audit log was unavailable")
+	}
+	if executorCalled {
+		t.Fatal("QR image was delivered before the audit record existed")
+	}
+}
+
+func TestPerformCertificateTOTPQRCodeViewBlocksMissingIdentity(t *testing.T) {
+	service, db, _, _, _ := newLifecycleTestService(
+		t,
+		"valid",
+		"qr-blocked-client",
+		"A1",
+		"",
+	)
+	defer db.Close()
+
+	executorCalled := false
+	err := service.PerformCertificateTOTPQRCodeView(
+		context.Background(),
+		1,
+		"qr-blocked-client",
+		adminLifecycleActor(),
+		func(CertificateState) error {
+			executorCalled = true
+			return nil
+		},
+	)
+	if !errors.Is(err, ErrCertificateTOTPQRBlocked) {
+		t.Fatalf("missing TOTP identity QR error = %v", err)
+	}
+	if executorCalled {
+		t.Fatal("missing TOTP identity executed QR delivery")
+	}
+	assertLatestAuditError(t, db, "qr_blocked")
 }
 
 func TestDownloadDeliverySerializesConcurrentRevoke(t *testing.T) {

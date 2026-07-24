@@ -137,29 +137,79 @@ func (c *CertificatesController) Get() {
 	c.Data["SettingsC"] = &cfg1
 }
 
-func (c *CertificatesController) DisplayImage() {
-	imageName := c.Ctx.Input.Param(":imageName")
-	if !services.ValidateCertificateCommonName(imageName) {
-		c.Ctx.Output.SetStatus(http.StatusNotFound)
-		c.Ctx.WriteString(c.T("certificate.image_not_found"))
+// @router /certificates/:id/totp-qr [post]
+func (c *CertificatesController) TOTPQRCode() {
+	if !c.ValidSessionCSRF() {
+		c.recordCertificateOperationAudit(
+			services.CertificateAuditActionTOTPQR,
+			c.GetString(":id"),
+			"failed",
+			"csrf_invalid",
+		)
+		c.renderCertificateHTTPError(http.StatusForbidden, "error.csrf_invalid")
 		return
 	}
-	imagePath := filepath.Join(state.GlobalCfg.OVConfigPath, "clients/", imageName+".png")
-
-	// Check if the image file exists
-	data, err := os.ReadFile(imagePath)
-	if err != nil {
-		c.Ctx.Output.SetStatus(404)
-		c.Ctx.WriteString(c.T("certificate.image_not_found"))
-		logs.Error("ERR_CERT_IMAGE_READ")
+	certificateID, err := c.certificateID()
+	if err != nil || c.LifecycleService == nil {
+		c.renderCertificateHTTPError(http.StatusNotFound, "certificate.not_found")
 		return
 	}
 
-	// Set the content type header to indicate it's an image
-	c.Ctx.Output.Header("Content-Type", "image/png")
+	responseStarted := false
+	err = c.LifecycleService.PerformCertificateTOTPQRCodeView(
+		c.Ctx.Request.Context(),
+		certificateID,
+		c.GetString("confirmation"),
+		c.lifecycleActor(),
+		func(certificateState services.CertificateState) error {
+			imagePath := filepath.Join(
+				state.GlobalCfg.OVConfigPath,
+				"clients",
+				certificateState.CommonName+".png",
+			)
+			data, err := os.ReadFile(imagePath)
+			if err != nil {
+				return err
+			}
+			c.Ctx.Output.Header("Content-Type", "image/png")
+			responseStarted = true
+			c.Ctx.Output.Body(data)
+			return nil
+		},
+	)
+	if err == nil || responseStarted {
+		if err != nil {
+			logs.Error("ERR_CERT_TOTP_QR_AUDIT")
+		}
+		return
+	}
 
-	// Write the image data directly to the response body
-	c.Ctx.Output.Body(data)
+	status := http.StatusConflict
+	key := "certificate.qr_view_blocked"
+	switch {
+	case errors.Is(err, services.ErrCertificateNotFound):
+		status = http.StatusNotFound
+		key = "certificate.not_found"
+	case errors.Is(err, services.ErrCertificateForbidden):
+		status = http.StatusForbidden
+		key = "error.admin_required"
+	case errors.Is(err, services.ErrCertificateConfirmation):
+		status = http.StatusConflict
+		key = "certificate.confirmation_mismatch"
+	case errors.Is(err, os.ErrNotExist):
+		status = http.StatusNotFound
+		key = "certificate.image_not_found"
+	case errors.Is(err, services.ErrCertificateTOTPQRBlocked),
+		errors.Is(err, services.ErrCertificateDownloadBlocked),
+		errors.Is(err, services.ErrCertificateIdentity):
+		status = http.StatusConflict
+		key = "certificate.qr_view_blocked"
+	default:
+		status = http.StatusInternalServerError
+		key = "certificate.qr_view_failed"
+	}
+	logs.Error("ERR_CERT_TOTP_QR")
+	c.renderCertificateHTTPError(status, key)
 }
 
 func (c *CertificatesController) showCerts() {
@@ -205,6 +255,7 @@ func (c *CertificatesController) showCerts() {
 		}
 		if certificate.Details != nil {
 			certificate.Details.Name = certificateState.CommonName
+			certificate.Details.TFAName = certificateState.TFAName
 			if certificateState.StaticIP != "" {
 				certificate.Details.LocalIP = certificateState.StaticIP
 			}
@@ -312,8 +363,12 @@ func (c *CertificatesController) Post() {
 				auditError := ""
 				if c.LifecycleService == nil {
 					c.FlashWarning(flash, "certificate.metadata_sync_failed")
-				} else if _, err := c.LifecycleService.SyncCertificateMetadata(
+				} else if _, err := c.LifecycleService.SyncCreatedCertificateMetadata(
 					c.Ctx.Request.Context(),
+					cParams.Name,
+					cParams.Staticip,
+					cParams.TFAName,
+					cParams.TFAIssuer,
 				); err != nil {
 					auditResult = "success_with_warning"
 					auditError = "metadata_sync_failed"

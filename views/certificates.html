@@ -54,15 +54,15 @@
                   </td>
                   {{if and (eq .Revocation "") (not .IsExpiring)}}
                     <td>
-                      <i class="fa fa-fw fa-check-circle" style="color: #00a65a; font-size: 17px;" data-toggle="modal" data-target="#{{ .Details.CN }}-modal"></i>
+                      <i class="fa fa-fw fa-check-circle" style="color: #00a65a; font-size: 17px;" data-toggle="modal" data-target="#certificate-{{ .ID }}-modal"></i>
                     </td>
                   {{else if and (eq .Revocation "") .IsExpiring}}
                     <td>
-                      <i class="fa fa-fw fa-exclamation-circle" style="color: #f39c12; font-size: 17px;" data-toggle="modal" data-target="#{{ .Details.CN }}-modal"></i>
+                      <i class="fa fa-fw fa-exclamation-circle" style="color: #f39c12; font-size: 17px;" data-toggle="modal" data-target="#certificate-{{ .ID }}-modal"></i>
                     </td>
                   {{else}}
                     <td>
-                      <i class="fa fa-fw fa-times-circle" style="color: #dd4b39; font-size: 17px;" data-toggle="modal" data-target="#{{ .Details.CN }}-modal"></i>
+                      <i class="fa fa-fw fa-times-circle" style="color: #dd4b39; font-size: 17px;" data-toggle="modal" data-target="#certificate-{{ .ID }}-modal"></i>
                     </td>
                   {{end}}
                     <td>
@@ -71,15 +71,15 @@
 
                   {{if and (eq .Revocation "") (not .IsExpiring)}}
                     <td>
-                      <a class="btn btn-success btn-xs" style="font-size: 80%;" data-toggle="modal" data-target="#{{ .Details.CN }}-modal"><b style="font-size: 80%;">{{ dateformat .ExpirationT "2006-01-02 15:04:05"}}</b></a>
+                      <a class="btn btn-success btn-xs" style="font-size: 80%;" data-toggle="modal" data-target="#certificate-{{ .ID }}-modal"><b style="font-size: 80%;">{{ dateformat .ExpirationT "2006-01-02 15:04:05"}}</b></a>
                     </td>
                   {{else if and (eq .Revocation "") .IsExpiring}}
                     <td>
-                      <a class="btn btn-warning btn-xs" style="font-size: 80%;" data-toggle="modal" data-target="#{{ .Details.CN }}-modal"><b style="font-size: 80%;">{{ dateformat .ExpirationT "2006-01-02 15:04:05"}}</b></a>
+                      <a class="btn btn-warning btn-xs" style="font-size: 80%;" data-toggle="modal" data-target="#certificate-{{ .ID }}-modal"><b style="font-size: 80%;">{{ dateformat .ExpirationT "2006-01-02 15:04:05"}}</b></a>
                     </td>
                   {{else}}
                     <td>
-                      <a class="btn btn-danger btn-xs" style="font-size: 80%;" data-toggle="modal" data-target="#{{ .Details.CN }}-modal"><b style="font-size: 80%;">{{ dateformat .ExpirationT "2006-01-02 15:04:05"}}</b></a>
+                      <a class="btn btn-danger btn-xs" style="font-size: 80%;" data-toggle="modal" data-target="#certificate-{{ .ID }}-modal"><b style="font-size: 80%;">{{ dateformat .ExpirationT "2006-01-02 15:04:05"}}</b></a>
                     </td>
                   {{end}}
 
@@ -87,7 +87,7 @@
                     <td></td>
                   {{else}}
                     <td>
-                      <a class="btn btn-danger btn-xs" style="font-size: 80%;" data-toggle="modal" data-target="#{{ .Details.CN }}-modal"><b style="font-size: 80%;">{{ dateformat .RevocationT "2006-01-02 15:04:05"}}</b></a>
+                      <a class="btn btn-danger btn-xs" style="font-size: 80%;" data-toggle="modal" data-target="#certificate-{{ .ID }}-modal"><b style="font-size: 80%;">{{ dateformat .RevocationT "2006-01-02 15:04:05"}}</b></a>
                     </td>
                   {{end}}
                     <!--td>
@@ -95,18 +95,18 @@
                     </td-->
                   {{if and (eq .Revocation "") (not .IsExpiring)}}
                     <td>
-                      <a class="btn btn-success btn-xs" style="font-size: 80%;" data-toggle="modal" data-target="#{{ .Details.CN }}-modal"><b style="font-size: 80%;">{{ .Details.CN }}</b></a>
-                      <a class="btn btn-success btn-xs" style="font-size: 80%;" data-toggle="modal" data-target="#{{ .Details.CN }}-modal"><b style="font-size: 80%;">{{ .Details.Email }}</b></a>
+                      <a class="btn btn-success btn-xs" style="font-size: 80%;" data-toggle="modal" data-target="#certificate-{{ .ID }}-modal"><b style="font-size: 80%;">{{ .Details.CN }}</b></a>
+                      <a class="btn btn-success btn-xs" style="font-size: 80%;" data-toggle="modal" data-target="#certificate-{{ .ID }}-modal"><b style="font-size: 80%;">{{ .Details.Email }}</b></a>
                     </td>
                   {{else if and (eq .Revocation "") .IsExpiring}}
                     <td>
-                      <a class="btn btn-warning btn-xs" style="font-size: 80%;" data-toggle="modal" data-target="#{{ .Details.CN }}-modal"><b style="font-size: 80%;">{{ .Details.CN }}</b></a>
-                      <a class="btn btn-warning btn-xs" style="font-size: 80%;" data-toggle="modal" data-target="#{{ .Details.CN }}-modal"><b style="font-size: 80%;">{{ .Details.Email }}</b></a>
+                      <a class="btn btn-warning btn-xs" style="font-size: 80%;" data-toggle="modal" data-target="#certificate-{{ .ID }}-modal"><b style="font-size: 80%;">{{ .Details.CN }}</b></a>
+                      <a class="btn btn-warning btn-xs" style="font-size: 80%;" data-toggle="modal" data-target="#certificate-{{ .ID }}-modal"><b style="font-size: 80%;">{{ .Details.Email }}</b></a>
                     </td>
                   {{else}}
                     <td>
-                      <a class="btn btn-danger btn-xs" style="font-size: 80%;" data-toggle="modal" data-target="#{{ .Details.CN }}-modal"><b style="font-size: 80%;">{{ .Details.CN }}</b></a>
-                      <a class="btn btn-danger btn-xs" style="font-size: 80%;" data-toggle="modal" data-target="#{{ .Details.CN }}-modal"><b style="font-size: 80%;">{{ .Details.Email }}</b></a>
+                      <a class="btn btn-danger btn-xs" style="font-size: 80%;" data-toggle="modal" data-target="#certificate-{{ .ID }}-modal"><b style="font-size: 80%;">{{ .Details.CN }}</b></a>
+                      <a class="btn btn-danger btn-xs" style="font-size: 80%;" data-toggle="modal" data-target="#certificate-{{ .ID }}-modal"><b style="font-size: 80%;">{{ .Details.Email }}</b></a>
                     </td>
                   {{end}}
                     <td class="align-middle">
@@ -119,7 +119,7 @@
                       <a class="btn btn-default btn-xs" disabled>{{t $.Localizer "certificate.renew"}}</a>
                   {{end}}
 
-                  {{ if and $.CanManageCertificates (eq .LifecycleStatus "valid") }}
+                  {{ if and $.CanManageCertificates (or (eq .LifecycleStatus "valid") (eq .LifecycleStatus "expired")) }}
                       <form method="post" action="{{urlfor "CertificatesController.Revoke" ":id" .ID}}" class="d-inline">
                         <input type="hidden" name="_csrf" value="{{$.SessionCSRFToken}}">
                         <input type="text" name="confirmation" class="form-control form-control-sm d-inline-block"
@@ -145,7 +145,7 @@
                   {{end}}
                     </td>
               </tr>
-              <div id="{{ .Details.CN }}-modal" class="modal fade">
+              <div id="certificate-{{ .ID }}-modal" class="modal fade">
                 <div class="modal-dialog">
                   <div class="modal-content">
                     <div class="modal-header">
@@ -159,7 +159,7 @@
                         {{ if eq (printf "%d" $.SettingsC.FuncMode) "1" }}
                         <!--dt class="copy-details">2FA Issuer String: </dt>
                         <dd class="copy-details">{{ $.SettingsC.TFAIssuer }}</dd-->
-                        <dt class="copy-details"><b><h4>2FA Name: </h4></b></dt>
+                        <dt class="copy-details"><b><h4>{{t $.Localizer "certificate.2fa_name"}}：</h4></b></dt>
                         <dd class="copy-details 2fa-name"><h4 style="color: #3c8dbc">{{ .Details.TFAName }}</h4></dd>
                         <dt class="copy-details"><b><h5>{{t $.Localizer "certificate.name"}}：</h5></b></dt>
                         <dd class="copy-details cert-name"><h5 style="color: #3c8dbc">{{ .Details.CN }}</h5></dd>
@@ -194,9 +194,29 @@
                         <dd class="copy-details">{{ $.SettingsC.TFAIssuer }}</dd-->
                         <dt class="copy-details">{{t $.Localizer "certificate.2fa_qr_code"}}：</dt>
                         <dd class="copy-details">
-                          {{ if and (eq .EntryType "V") (ne .Details.Name "") }}
+                          {{ if and $.CanManageCertificates .DownloadAllowed (ne .Details.TFAName "") }}
+                            <form method="post"
+                              action="{{urlfor "CertificatesController.TOTPQRCode" ":id" .ID}}"
+                              class="totp-qr-form"
+                              data-image-id="certificate-{{.ID}}-totp-qr"
+                              data-error-id="certificate-{{.ID}}-totp-qr-error">
+                              <input type="hidden" name="_csrf" value="{{$.SessionCSRFToken}}">
+                              <input type="text" name="confirmation"
+                                class="form-control form-control-sm"
+                                required autocomplete="off"
+                                placeholder="{{t $.Localizer "certificate.confirm_name"}}"
+                                aria-label="{{t $.Localizer "certificate.confirm_name"}}">
+                              <button type="submit" class="btn btn-primary btn-xs">
+                                {{t $.Localizer "certificate.show_2fa_qr"}}
+                              </button>
+                            </form>
                             <div class="text-left qr-code">
-                              <img src="/displayimage/{{ .Details.Name }}">
+                              <img id="certificate-{{.ID}}-totp-qr"
+                                alt="{{t $.Localizer "certificate.2fa_qr_code"}}"
+                                hidden>
+                              <p id="certificate-{{.ID}}-totp-qr-error"
+                                class="text-danger"
+                                role="alert"></p>
                             </div>
                           {{end}}
                         </dd>
@@ -412,7 +432,7 @@ $('.send-email-with-qr-btn').on('click', function () {
   var emailBody = `{{t .Localizer "certificate.email_greeting"}} ${certName},\n\n`
     + `{{t .Localizer "certificate.email_intro"}}\n\n`
     + `{{t .Localizer "certificate.name"}}: ${certName}\n`
-    + `2FA Name: ${tfaName}\n`
+    + `{{t .Localizer "certificate.2fa_name"}}: ${tfaName}\n`
     + `{{t .Localizer "certificate.email_validity"}} ${emailAddress} / ${expirationDate}.\n\n`
     + `{{t .Localizer "certificate.email_closing"}}\n\n`
     + `${organisation}`;
@@ -428,4 +448,55 @@ $('.send-email-with-qr-btn').on('click', function () {
   // Open the default email client with the mailto link
   window.location.href = mailtoLink;
 });
-  </script>
+
+$('.totp-qr-form').on('submit', function (event) {
+  event.preventDefault();
+  var form = this;
+  var image = document.getElementById(form.dataset.imageId);
+  var error = document.getElementById(form.dataset.errorId);
+  var button = form.querySelector('button[type="submit"]');
+  error.textContent = '';
+  button.disabled = true;
+
+  fetch(form.action, {
+    method: 'POST',
+    body: new FormData(form),
+    credentials: 'same-origin',
+    headers: {
+      'Accept': 'image/png'
+    }
+  }).then(function (response) {
+    if (!response.ok) {
+      return response.text().then(function (message) {
+        throw new Error(message || '{{t .Localizer "certificate.qr_view_failed"}}');
+      });
+    }
+    return response.blob();
+  }).then(function (blob) {
+    if (image.dataset.objectUrl) {
+      URL.revokeObjectURL(image.dataset.objectUrl);
+    }
+    var objectUrl = URL.createObjectURL(blob);
+    image.dataset.objectUrl = objectUrl;
+    image.src = objectUrl;
+    image.hidden = false;
+  }).catch(function (requestError) {
+    image.hidden = true;
+    error.textContent = requestError.message;
+  }).finally(function () {
+    button.disabled = false;
+  });
+});
+
+$('.modal').on('hidden.bs.modal', function () {
+  $(this).find('.totp-qr-form').each(function () {
+    var image = document.getElementById(this.dataset.imageId);
+    if (image && image.dataset.objectUrl) {
+      URL.revokeObjectURL(image.dataset.objectUrl);
+      delete image.dataset.objectUrl;
+      image.removeAttribute('src');
+      image.hidden = true;
+    }
+  });
+});
+</script>

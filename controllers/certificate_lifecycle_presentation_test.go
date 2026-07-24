@@ -24,6 +24,10 @@ func TestCertificateLifecyclePageUsesPostDatabaseIDAndSessionCSRF(t *testing.T) 
 		`name="_csrf" value="{{$.SessionCSRFToken}}"`,
 		`name="confirmation"`,
 		`"CertificatesController.Download" ":id" .ID`,
+		`"CertificatesController.TOTPQRCode" ":id" .ID`,
+		`id="certificate-{{ .ID }}-modal"`,
+		`data-target="#certificate-{{ .ID }}-modal"`,
+		`(or (eq .LifecycleStatus "valid") (eq .LifecycleStatus "expired"))`,
 	} {
 		if !strings.Contains(template, required) {
 			t.Fatalf("certificate template is missing %q", required)
@@ -37,6 +41,8 @@ func TestCertificateLifecyclePageUsesPostDatabaseIDAndSessionCSRF(t *testing.T) 
 		`href="{{urlfor "CertificatesController.Restart"`,
 		`javascript:$.MyAPP.Restart`,
 		`name="tfa_name"`,
+		`/displayimage/`,
+		`id="{{ .Details.CN }}-modal"`,
 	} {
 		if strings.Contains(template, prohibited) {
 			t.Fatalf("certificate template still contains legacy lifecycle route %q", prohibited)
@@ -56,6 +62,7 @@ func TestCertificateLifecycleRoutesUsePostAndStableDatabaseID(t *testing.T) {
 		"Router:           `/certificates/:id/renew`",
 		`AllowHTTPMethods: []string{"post"}`,
 		"Router:           `/certificates/:id/download`",
+		"Router:           `/certificates/:id/totp-qr`",
 	} {
 		if !strings.Contains(routes, required) {
 			t.Fatalf("generated certificate routes are missing %q", required)
@@ -65,6 +72,7 @@ func TestCertificateLifecycleRoutesUsePostAndStableDatabaseID(t *testing.T) {
 		"/certificates/burn/",
 		"/certificates/revoke/:key",
 		"/certificates/renew/:key",
+		"/displayimage/:imageName",
 	} {
 		if strings.Contains(routes, prohibited) {
 			t.Fatalf("generated routes still contain legacy path %q", prohibited)

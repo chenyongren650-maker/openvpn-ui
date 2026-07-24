@@ -52,17 +52,11 @@ fi
 
 # Sign request. Bypass "yes" with export EASYRSA_BATCH=1 
 ./easyrsa sign-req client "$CERT_NAME"
-# Fix for /name in index.txt
-
 # Check if 2FA was specified. If not - set to none.
 if [ -z "$TFA_NAME" ]; then
     TFA_NAME="none"
 fi
 
-echo "Fixing Database..."
-sed -i'.bak' "$ s/$/\/name=${CERT_NAME}\/LocalIP=${CERT_IP}\/2FAName=${TFA_NAME}/" $EASY_RSA/pki/index.txt
-echo "Database fixed:"
-tail -1 $EASY_RSA/pki/index.txt
 # Certificate properties
 CA="$(cat $EASY_RSA/pki/ca.crt )"
 CERT="$(awk '/-----BEGIN CERTIFICATE-----/{flag=1;next}/-----END CERTIFICATE-----/{flag=0}flag' ./pki/issued/${CERT_NAME}.crt | tr -d '\0')"
@@ -104,16 +98,22 @@ if [[ ! -z $TFA_NAME ]] && [[ $TFA_NAME != "none" ]]; then
     QRSTRING="otpauth://totp/$TFA_ISSUER:$TFA_NAME?secret=$BASE32"
 
     # QR code for user to pass to Google Authenticator or OpenVPN-UI
-    echo "User String for QR:"
-    echo $QRSTRING
-
-    /opt/scripts/qrencode "$QRSTRING" > $OPENVPN_DIR/clients/$CERT_NAME.png
+    /opt/scripts/qrencode "$QRSTRING" > "$OPENVPN_DIR/clients/$CERT_NAME.png"
 
     # New string for secrets file
-    echo "oath.secrets entry for BackEnd:"
-    echo "$TFA_NAME:$USERHASH" | tee -a $OATH_SECRETS
+    printf '%s:%s\n' "$TFA_NAME" "$USERHASH" >> "$OATH_SECRETS"
 
     else
     echo 'No 2FA specified. exiting'
 
 fi
+
+# A non-sensitive completion marker lets the UI distinguish a completed
+# creation from a partially failed script without reading oath.secrets.
+COMPLETION_MARKER="$OPENVPN_DIR/clients/.${CERT_NAME}.creation-complete"
+TEMP_COMPLETION_MARKER="${COMPLETION_MARKER}.tmp.$$"
+umask 077
+printf 'name=%s\nstatic_ip=%s\ntfa_name=%s\nissuer=%s\n' \
+    "$CERT_NAME" "$CERT_IP" "$TFA_NAME" "$TFA_ISSUER" \
+    > "$TEMP_COMPLETION_MARKER"
+mv "$TEMP_COMPLETION_MARKER" "$COMPLETION_MARKER"

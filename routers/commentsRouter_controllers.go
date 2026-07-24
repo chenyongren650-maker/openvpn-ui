@@ -49,9 +49,9 @@ func init() {
 	web.GlobalControllerRouter["github.com/d3vilh/openvpn-ui/controllers:CertificatesController"] =
 		append(web.GlobalControllerRouter["github.com/d3vilh/openvpn-ui/controllers:CertificatesController"],
 			web.ControllerComments{
-				Method:           "DisplayImage",
-				Router:           `/displayimage/:imageName`,
-				AllowHTTPMethods: []string{"get"},
+				Method:           "TOTPQRCode",
+				Router:           `/certificates/:id/totp-qr`,
+				AllowHTTPMethods: []string{"post"},
 				Params:           nil})
 
 	web.GlobalControllerRouter["github.com/d3vilh/openvpn-ui/controllers:CertificatesController"] =

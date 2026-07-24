@@ -30,11 +30,13 @@ const (
 	CertificateAuditActionRenew    = "certificate.renew"
 	CertificateAuditActionRestart  = "certificate.restart"
 	CertificateAuditActionRevoke   = "certificate.revoke"
+	CertificateAuditActionTOTPQR   = "certificate.totp_qr_view"
 	CertificateAuditResultStarted  = "started"
 
 	auditActionArchive       = CertificateAuditActionArchive
 	auditActionDownload      = CertificateAuditActionDownload
 	auditActionRevoke        = CertificateAuditActionRevoke
+	auditActionTOTPQR        = CertificateAuditActionTOTPQR
 	auditTargetType          = "certificate"
 	defaultManagementTimeout = 5 * time.Second
 )
@@ -49,6 +51,7 @@ var (
 	ErrCertificateCommand         = errors.New("certificate revocation command failed")
 	ErrCertificateCRL             = errors.New("certificate revocation list generation failed")
 	ErrCertificateDownloadBlocked = errors.New("certificate configuration download is blocked")
+	ErrCertificateTOTPQRBlocked   = errors.New("certificate TOTP QR code view is blocked")
 	ErrCertificateRenewal         = errors.New("certificate renewal failed")
 )
 
@@ -87,6 +90,7 @@ type CertificateState struct {
 	SerialNumber       string
 	Status             string
 	StaticIP           string
+	TFAName            string
 	TechnicalExpiresAt *time.Time
 	RevokedAt          *time.Time
 	ArchivedAt         *time.Time
@@ -327,6 +331,99 @@ func (s *CertificateLifecycleService) SyncCertificateMetadata(
 	return s.syncCertificateMetadataLocked(ctx)
 }
 
+// SyncCreatedCertificateMetadata imports the read-only Easy-RSA index and
+// attaches database-owned static IP and non-secret TOTP identity metadata.
+// TOTP seeds remain exclusively in the existing oath.secrets workflow.
+func (s *CertificateLifecycleService) SyncCreatedCertificateMetadata(
+	ctx context.Context,
+	commonName string,
+	staticIP string,
+	tfaName string,
+	issuer string,
+) (CertificateImportResult, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	result, err := s.syncCertificateMetadataLocked(ctx)
+	if err != nil {
+		return result, err
+	}
+	commonName = strings.TrimSpace(commonName)
+	staticIP = strings.TrimSpace(staticIP)
+	tfaName = strings.TrimSpace(tfaName)
+	if !ValidateCertificateCommonName(commonName) {
+		return result, errors.New("invalid created certificate identity metadata")
+	}
+	staticIPValue := any(nil)
+	if staticIP != "" {
+		parsedIP := net.ParseIP(staticIP)
+		if parsedIP == nil ||
+			parsedIP.To4() == nil ||
+			parsedIP.To4().String() != staticIP {
+			return result, errors.New("invalid created certificate static IP metadata")
+		}
+		staticIPValue = staticIP
+	}
+	if (tfaName != "" && !ValidateCertificateCommonName(tfaName)) ||
+		len(issuer) > 128 ||
+		strings.ContainsAny(issuer, "\x00\r\n") {
+		return result, errors.New("invalid 2FA identity metadata")
+	}
+
+	currentSerial, err := s.currentIssuedCertificateSerial(commonName)
+	if err != nil {
+		return result, fmt.Errorf("read created certificate identity: %w", err)
+	}
+	certificateID, err := s.certificateIDBySerial(ctx, currentSerial)
+	if err != nil {
+		return result, fmt.Errorf("read created certificate database ID: %w", err)
+	}
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return result, fmt.Errorf("begin created certificate metadata update: %w", err)
+	}
+	defer tx.Rollback()
+
+	updateResult, err := tx.ExecContext(
+		ctx,
+		`UPDATE certificates
+		SET static_ip = ?
+		WHERE id = ? AND common_name = ?
+			AND status IN ('valid', 'expired')
+			AND archived_at IS NULL`,
+		staticIPValue,
+		certificateID,
+		commonName,
+	)
+	if err != nil {
+		return result, fmt.Errorf("update created certificate metadata: %w", err)
+	}
+	rowsAffected, err := updateResult.RowsAffected()
+	if err != nil || rowsAffected != 1 {
+		return result, errors.New("created certificate metadata target was not updated")
+	}
+	if tfaName != "" {
+		if err := upsertTOTPIdentityMetadata(
+			ctx,
+			tx,
+			certificateID,
+			tfaName,
+			issuer,
+			s.now().UTC(),
+		); err != nil {
+			return result, fmt.Errorf(
+				"update created certificate 2FA identity metadata: %w",
+				err,
+			)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return result, fmt.Errorf("commit created certificate metadata: %w", err)
+	}
+	return result, nil
+}
+
 func (s *CertificateLifecycleService) syncCertificateMetadataLocked(
 	ctx context.Context,
 ) (CertificateImportResult, error) {
@@ -342,11 +439,13 @@ func (s *CertificateLifecycleService) ListCertificateStates(
 		operator = "IS NOT NULL"
 	}
 	rows, err := s.db.QueryContext(ctx, `SELECT
-		id, common_name, serial_number, status, static_ip,
-		technical_expires_at, revoked_at, archived_at
-	FROM certificates
-	WHERE archived_at `+operator+`
-	ORDER BY common_name, id`)
+		c.id, c.common_name, c.serial_number, c.status, c.static_ip,
+		c.technical_expires_at, c.revoked_at, c.archived_at,
+		t.tfa_name
+	FROM certificates AS c
+	LEFT JOIN totp_identities AS t ON t.certificate_id = c.id
+	WHERE c.archived_at `+operator+`
+	ORDER BY c.common_name, c.id`)
 	if err != nil {
 		return nil, fmt.Errorf("list certificate lifecycle state: %w", err)
 	}
@@ -508,6 +607,97 @@ func (s *CertificateLifecycleService) PerformCertificateDownload(
 		auditActionDownload,
 		certificateID,
 		"certificate configuration download",
+		"success",
+		"",
+	)
+}
+
+// PerformCertificateTOTPQRCodeView keeps authorization, name confirmation,
+// lifecycle validation, image delivery, and auditing under the same mutex.
+func (s *CertificateLifecycleService) PerformCertificateTOTPQRCodeView(
+	ctx context.Context,
+	certificateID int64,
+	confirmation string,
+	actor CertificateLifecycleActor,
+	executor CertificateDownloadExecutor,
+) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if !actor.IsAdmin {
+		return s.auditFailure(
+			ctx,
+			actor,
+			auditActionTOTPQR,
+			certificateID,
+			"permission_denied",
+			ErrCertificateForbidden,
+		)
+	}
+	state, err := s.downloadableCertificateLocked(ctx, certificateID)
+	if err != nil || state.TFAName == "" {
+		_ = s.recordAudit(
+			ctx,
+			s.db,
+			actor,
+			auditActionTOTPQR,
+			certificateID,
+			"certificate TOTP QR code view",
+			"failed",
+			"qr_blocked",
+		)
+		if err != nil {
+			return err
+		}
+		return ErrCertificateTOTPQRBlocked
+	}
+	if !constantTimeStringEqual(confirmation, state.CommonName) {
+		return s.auditFailure(
+			ctx,
+			actor,
+			auditActionTOTPQR,
+			certificateID,
+			"confirmation_mismatch",
+			ErrCertificateConfirmation,
+		)
+	}
+	if err := s.recordAudit(
+		ctx,
+		s.db,
+		actor,
+		auditActionTOTPQR,
+		certificateID,
+		"certificate TOTP QR code view",
+		CertificateAuditResultStarted,
+		"",
+	); err != nil {
+		return err
+	}
+	if executor == nil {
+		err = errors.New("certificate TOTP QR code executor is nil")
+	} else {
+		err = executor(state)
+	}
+	if err != nil {
+		_ = s.recordAudit(
+			ctx,
+			s.db,
+			actor,
+			auditActionTOTPQR,
+			certificateID,
+			"certificate TOTP QR code view",
+			"failed",
+			"qr_delivery_failed",
+		)
+		return err
+	}
+	return s.recordAudit(
+		ctx,
+		s.db,
+		actor,
+		auditActionTOTPQR,
+		certificateID,
+		"certificate TOTP QR code view",
 		"success",
 		"",
 	)
@@ -1408,9 +1598,12 @@ func (s *CertificateLifecycleService) loadCertificate(
 	certificateID int64,
 ) (CertificateState, error) {
 	row := s.db.QueryRowContext(ctx, `SELECT
-		id, common_name, serial_number, status, static_ip,
-		technical_expires_at, revoked_at, archived_at
-	FROM certificates WHERE id = ?`, certificateID)
+		c.id, c.common_name, c.serial_number, c.status, c.static_ip,
+		c.technical_expires_at, c.revoked_at, c.archived_at,
+		t.tfa_name
+	FROM certificates AS c
+	LEFT JOIN totp_identities AS t ON t.certificate_id = c.id
+	WHERE c.id = ?`, certificateID)
 	state, err := scanCertificateState(row.Scan)
 	if errors.Is(err, sql.ErrNoRows) {
 		return CertificateState{}, ErrCertificateNotFound
@@ -1427,6 +1620,7 @@ type rowScanner func(...any) error
 func scanCertificateState(scan rowScanner) (CertificateState, error) {
 	var state CertificateState
 	var staticIP sql.NullString
+	var tfaName sql.NullString
 	var technicalExpiresAt, revokedAt, archivedAt sql.NullTime
 	if err := scan(
 		&state.ID,
@@ -1437,11 +1631,15 @@ func scanCertificateState(scan rowScanner) (CertificateState, error) {
 		&technicalExpiresAt,
 		&revokedAt,
 		&archivedAt,
+		&tfaName,
 	); err != nil {
 		return CertificateState{}, err
 	}
 	if staticIP.Valid {
 		state.StaticIP = staticIP.String
+	}
+	if tfaName.Valid {
+		state.TFAName = tfaName.String
 	}
 	if technicalExpiresAt.Valid {
 		value := technicalExpiresAt.Time.UTC()
@@ -1478,6 +1676,7 @@ func (s *CertificateLifecycleService) RecordCertificateOperationAudit(
 		CertificateAuditActionRenew:    "certificate renewal",
 		CertificateAuditActionRestart:  "OpenVPN restart",
 		CertificateAuditActionRevoke:   "certificate revocation",
+		CertificateAuditActionTOTPQR:   "certificate TOTP QR code view",
 	}[action]
 	if !validAction {
 		return errors.New("invalid certificate audit action")

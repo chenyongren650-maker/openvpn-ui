@@ -33,7 +33,9 @@ func TestParseCertificateIndexSupportsCertificateHistory(t *testing.T) {
 	}
 
 	if records[0].CommonName != "test/client" || records[0].SerialNumber != "0A" ||
-		records[0].Status != "valid" || records[0].StaticIP != nil {
+		records[0].Status != "valid" || records[0].StaticIP != nil ||
+		records[0].TFAName == nil ||
+		*records[0].TFAName != "test-user@example.invalid" {
 		t.Fatalf("unexpected valid certificate metadata: %+v", records[0])
 	}
 	if records[1].CommonName != "test-client" || records[1].Status != "revoked" ||
@@ -89,6 +91,11 @@ func TestParseCertificateIndexRejectsInvalidInputWithoutExposingLine(t *testing.
 			index: "V\t270101000000Z\t\t01\tunknown\t/CN=test-client/LocalIP=not-an-ip",
 			want:  "invalid static IP metadata",
 		},
+		{
+			name:  "invalid 2FA identity",
+			index: "V\t270101000000Z\t\t01\tunknown\t/CN=test-client/2FAName=bad name",
+			want:  "invalid 2FA identity metadata",
+		},
 	}
 
 	for _, test := range tests {
@@ -110,8 +117,8 @@ func TestImportCertificateMetadataFileIsReadOnlyAndIdempotent(t *testing.T) {
 
 	now := time.Date(2026, time.July, 23, 12, 0, 0, 0, time.UTC)
 	indexContent := strings.Join([]string{
-		"V\t270101000000Z\t\t01\tunknown\t/C=CN/O=Test/CN=test-client/name=test-client/LocalIP=dynamic.pool/2FAName=test-user@example.invalid",
-		"R\t270101000000Z\t260701010203Z\t02\tunknown\t/C=CN/O=Test/CN=test-client/name=test-client/LocalIP=10.250.71.10/2FAName=test-user@example.invalid",
+		"R\t270101000000Z\t260701010203Z\t01\tunknown\t/C=CN/O=Test/CN=test-client/name=test-client/LocalIP=10.250.71.10/2FAName=test-user@example.invalid",
+		"V\t270101000000Z\t\t02\tunknown\t/C=CN/O=Test/CN=test-client",
 	}, "\n") + "\n"
 	pkiDirectory := filepath.Join(t.TempDir(), "pki")
 	if err := os.MkdirAll(pkiDirectory, 0o700); err != nil {
@@ -154,11 +161,29 @@ func TestImportCertificateMetadataFileIsReadOnlyAndIdempotent(t *testing.T) {
 	if err := db.QueryRow(`SELECT COUNT(*) FROM totp_identities`).Scan(&totpIdentityCount); err != nil {
 		t.Fatalf("count TOTP identity metadata: %v", err)
 	}
-	if certificateCount != 2 || totpIdentityCount != 0 {
+	if certificateCount != 2 || totpIdentityCount != 1 {
 		t.Fatalf(
-			"certificate count = %d, TOTP identity count = %d; want 2 and 0",
+			"certificate count = %d, TOTP identity count = %d; want 2 and 1",
 			certificateCount,
 			totpIdentityCount,
+		)
+	}
+	var tfaName, issuer, serialNumber string
+	if err := db.QueryRow(`SELECT
+		t.tfa_name, t.issuer, c.serial_number
+		FROM totp_identities AS t
+		JOIN certificates AS c ON c.id = t.certificate_id`).
+		Scan(&tfaName, &issuer, &serialNumber); err != nil {
+		t.Fatalf("read imported TOTP identity metadata: %v", err)
+	}
+	if tfaName != "test-user@example.invalid" ||
+		issuer != "" ||
+		serialNumber != "02" {
+		t.Fatalf(
+			"imported TOTP metadata = %q, %q, %q",
+			tfaName,
+			issuer,
+			serialNumber,
 		)
 	}
 }
@@ -322,6 +347,59 @@ func TestImportCertificateMetadataRollsBackBatchOnDatabaseFailure(t *testing.T) 
 	}
 	if certificateCount != 0 {
 		t.Fatalf("certificate count after rollback = %d, want 0", certificateCount)
+	}
+}
+
+func TestImportCertificateMetadataRejectsTOTPIdentityAcrossDifferentNames(
+	t *testing.T,
+) {
+	db := openCertificateImportTestDatabase(t)
+	defer db.Close()
+
+	tfaName := "shared-user@example.invalid"
+	records := []certificateMetadata{
+		{
+			CommonName:         "test-client-01",
+			SerialNumber:       "01",
+			Status:             "valid",
+			TFAName:            &tfaName,
+			TechnicalExpiresAt: time.Date(2027, time.January, 1, 0, 0, 0, 0, time.UTC),
+		},
+		{
+			CommonName:         "test-client-02",
+			SerialNumber:       "02",
+			Status:             "valid",
+			TFAName:            &tfaName,
+			TechnicalExpiresAt: time.Date(2027, time.January, 1, 0, 0, 0, 0, time.UTC),
+		},
+	}
+	if _, err := importCertificateMetadata(
+		context.Background(),
+		db,
+		records,
+		time.Date(2026, time.July, 23, 12, 0, 0, 0, time.UTC),
+	); err == nil {
+		t.Fatal("shared TOTP identity across certificate names was accepted")
+	}
+
+	var certificateCount int
+	var identityCount int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM certificates`).Scan(
+		&certificateCount,
+	); err != nil {
+		t.Fatalf("count certificates after TOTP identity rollback: %v", err)
+	}
+	if err := db.QueryRow(`SELECT COUNT(*) FROM totp_identities`).Scan(
+		&identityCount,
+	); err != nil {
+		t.Fatalf("count TOTP identities after rollback: %v", err)
+	}
+	if certificateCount != 0 || identityCount != 0 {
+		t.Fatalf(
+			"TOTP identity conflict rollback left certificates=%d identities=%d",
+			certificateCount,
+			identityCount,
+		)
 	}
 }
 
