@@ -95,6 +95,9 @@ func TestCertificateAdministrativeControllersRejectNonAdmin(t *testing.T) {
 		run  func(*CertificatesController)
 	}{
 		{name: "create", run: func(controller *CertificatesController) { controller.Post() }},
+		{name: "revoke", run: func(controller *CertificatesController) { controller.Revoke() }},
+		{name: "archive", run: func(controller *CertificatesController) { controller.Archive() }},
+		{name: "renew", run: func(controller *CertificatesController) { controller.Renew() }},
 		{name: "restart", run: func(controller *CertificatesController) { controller.Restart() }},
 		{name: "reload", run: func(controller *CertificatesController) { controller.Reload() }},
 	}

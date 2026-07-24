@@ -79,22 +79,19 @@ func (c *LoginController) Login() {
 
 	authType, err := web.AppConfig.String("AuthType")
 	if err != nil {
-		c.FlashError(flash, "login.configuration_error", "ERR_LOGIN_CONFIG", err, false)
-		flash.Store(&c.Controller)
+		c.setLoginError("login.configuration_error", "ERR_LOGIN_CONFIG")
 		return
 	}
 	user, err := lib.Authenticate(login, password, authType)
 
 	if err != nil {
-		c.FlashError(flash, "login.invalid_credentials", "ERR_LOGIN_FAILED", err, false)
-		flash.Store(&c.Controller)
+		c.setLoginError("login.invalid_credentials", "ERR_LOGIN_FAILED")
 		return
 	}
 	user.Lastlogintime = time.Now()
 	err = user.Update("Lastlogintime")
 	if err != nil {
-		c.FlashError(flash, "login.update_failed", "ERR_LOGIN_UPDATE", err, false)
-		flash.Store(&c.Controller)
+		c.setLoginError("login.update_failed", "ERR_LOGIN_UPDATE")
 		return
 	}
 	c.FlashSuccess(flash, "login.success")
@@ -212,11 +209,15 @@ func (c *LoginController) GoogleCallback() {
 
 func (c *LoginController) renderLoginError(messageKey, code string) {
 	logs.Warning("%s", code)
-	c.Data["error"] = c.T(messageKey)
-	c.Data["error_code"] = code
+	c.setLoginError(messageKey, code)
 	c.Data["xsrfdata"] = template.HTML(c.XSRFFormHTML())
-	c.TplName = "login.html"
 	if err := c.Render(); err != nil {
 		logs.Warning("ERR_LOGIN_RENDER")
 	}
+}
+
+func (c *LoginController) setLoginError(messageKey, code string) {
+	c.Data["error"] = c.T(messageKey)
+	c.Data["error_code"] = code
+	c.TplName = "login.html"
 }

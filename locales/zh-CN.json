@@ -65,6 +65,7 @@
   "certificate.invalid_state": "当前证书状态不允许执行该操作",
   "certificate.ipv4_without_subnet": "请输入不带子网掩码的 IPv4 地址",
   "certificate.issuer_help": "仅对之后新建或重置的 2FA 生效；生产环境基线为 ZHISUAN。",
+  "certificate.legacy_index_incompatible": "旧证书索引兼容处理失败，吊销已停止且未执行 Easy-RSA",
   "certificate.name": "证书名称",
   "certificate.name_help": "证书可导入多个设备；设备备注为可选信息。",
   "certificate.name_no_spaces": "证书名称不允许包含空格",
