@@ -156,16 +156,11 @@
                     <div class="modal-body">
                       <!-- /.dl-header -->
                       <dl class="dl-horizontal" id="certificate-details">
-                        {{ if eq (printf "%d" $.SettingsC.FuncMode) "1" }}
-                        <!--dt class="copy-details">2FA Issuer String: </dt>
-                        <dd class="copy-details">{{ $.SettingsC.TFAIssuer }}</dd-->
-                        <dt class="copy-details"><b><h4>{{t $.Localizer "certificate.2fa_name"}}：</h4></b></dt>
-                        <dd class="copy-details 2fa-name"><h4 style="color: #3c8dbc">{{ .Details.TFAName }}</h4></dd>
-                        <dt class="copy-details"><b><h5>{{t $.Localizer "certificate.name"}}：</h5></b></dt>
-                        <dd class="copy-details cert-name"><h5 style="color: #3c8dbc">{{ .Details.CN }}</h5></dd>
-                        {{else}}
                         <dt class="copy-details"><b><h4>{{t $.Localizer "common.name"}}：</h4></b></dt>
                         <dd class="copy-details cert-name"><h4 style="color: #3c8dbc">{{ .Details.CN }}</h4></dd>
+                        {{if .TOTP}}
+                        <dt class="copy-details"><b><h4>{{t $.Localizer "certificate.2fa_name"}}：</h4></b></dt>
+                        <dd class="copy-details 2fa-name"><h4 style="color: #3c8dbc">{{ .TOTP.TFAName }}</h4></dd>
                         {{end}}
                         <dt class="copy-details">{{t $.Localizer "common.status"}}：</dt>
                         <dd class="copy-details">{{if eq .LifecycleStatus "archived"}}<span class="badge bg-secondary" style="font-size: 110%;">{{t $.Localizer "certificate.archived_status"}}</span>{{else if eq .EntryType "V"}}<span class="badge bg-success" style="font-size: 110%;" >{{t $.Localizer "certificate.valid"}}</span>{{else if eq .EntryType "R"}}<span class="badge bg-danger" style="font-size: 110%;">{{t $.Localizer "certificate.revoked_status"}}</span>{{else}}{{t $.Localizer "common.unknown"}}{{end}}</dd>
@@ -189,12 +184,20 @@
                         <dd class="copy-details reg-org"><span id="helpBlock" class="text-muted">{{ .Details.Organisation }}</span></dd>
                         <dt class="copy-details">{{t $.Localizer "certificate.registered_unit"}}：</dt>
                         <dd class="copy-details"><span id="helpBlock" class="text-muted">{{ .Details.OrganisationUnit }}</span></dd>
-                        {{ if eq (printf "%d" $.SettingsC.FuncMode) "1" }}
-                        <!--dt class="copy-details">2FA Issuer String: </dt>
-                        <dd class="copy-details">{{ $.SettingsC.TFAIssuer }}</dd-->
+                        {{if .TOTP}}
+                        <dt class="copy-details">{{t $.Localizer "totp.status"}}：</dt>
+                        <dd class="copy-details"><span class="badge bg-success">{{t $.Localizer "totp.status_active"}}</span></dd>
+                        <dt class="copy-details">{{t $.Localizer "totp.issuer"}}：</dt>
+                        <dd class="copy-details">{{.TOTP.Issuer}}</dd>
+                        <dt class="copy-details">{{t $.Localizer "totp.created_at"}}：</dt>
+                        <dd class="copy-details">{{dateformat .TOTP.CreatedAt "2006-01-02 15:04:05"}}</dd>
+                        <dt class="copy-details">{{t $.Localizer "totp.reset_at"}}：</dt>
+                        <dd class="copy-details">{{if .TOTP.ResetAt}}{{dateformat .TOTP.ResetAt "2006-01-02 15:04:05"}}{{else}}{{t $.Localizer "common.never"}}{{end}}</dd>
+                        <dt class="copy-details">{{t $.Localizer "totp.last_verified_at"}}：</dt>
+                        <dd class="copy-details">{{if .TOTP.LastVerifiedAt}}{{dateformat .TOTP.LastVerifiedAt "2006-01-02 15:04:05"}}{{else}}{{t $.Localizer "common.never"}}{{end}}</dd>
                         <dt class="copy-details">{{t $.Localizer "certificate.2fa_qr_code"}}：</dt>
                         <dd class="copy-details">
-                          {{ if and $.CanManageCertificates .DownloadAllowed (ne .Details.TFAName "") }}
+                          {{if .TOTPManageAllowed}}
                             <form method="post"
                               action="{{urlfor "CertificatesController.TOTPQRCode" ":id" .ID}}"
                               class="totp-qr-form"
@@ -219,6 +222,80 @@
                                 role="alert"></p>
                             </div>
                           {{end}}
+                        </dd>
+                        <dt>{{t $.Localizer "totp.secret"}}：</dt>
+                        <dd>
+                          <div class="totp-secret-output"
+                            data-secret-timeout="60000">
+                            <code class="totp-secret-value"
+                              data-mask="{{t $.Localizer "totp.secret_mask"}}">{{t $.Localizer "totp.secret_mask"}}</code>
+                            <button type="button"
+                              class="btn btn-default btn-xs totp-secret-copy"
+                              hidden>{{t $.Localizer "totp.copy_secret"}}</button>
+                          </div>
+                          {{if .TOTPManageAllowed}}
+                          <form method="post"
+                            action="{{urlfor "TOTPController.Secret" ":id" .ID}}"
+                            class="totp-json-form totp-secret-form">
+                            <input type="hidden" name="_csrf" value="{{$.SessionCSRFToken}}">
+                            <input type="text" name="confirmation"
+                              class="form-control form-control-sm"
+                              required maxlength="128" autocomplete="off"
+                              placeholder="{{t $.Localizer "certificate.confirm_name"}}"
+                              aria-label="{{t $.Localizer "certificate.confirm_name"}}">
+                            <button type="submit" class="btn btn-primary btn-xs"
+                              data-processing-text="{{t $.Localizer "totp.processing"}}">
+                              {{t $.Localizer "totp.show_secret"}}
+                            </button>
+                          </form>
+                          {{end}}
+                          <p class="totp-form-message" role="status"></p>
+                        </dd>
+                        <dt>{{t $.Localizer "totp.verify_title"}}：</dt>
+                        <dd>
+                          {{if .TOTPManageAllowed}}
+                          <form method="post"
+                            action="{{urlfor "TOTPController.Verify" ":id" .ID}}"
+                            class="totp-json-form totp-verify-form">
+                            <input type="hidden" name="_csrf" value="{{$.SessionCSRFToken}}">
+                            <input type="text" name="code"
+                              class="form-control form-control-sm"
+                              required minlength="6" maxlength="6"
+                              inputmode="numeric" pattern="[0-9]{6}"
+                              autocomplete="one-time-code"
+                              placeholder="{{t $.Localizer "totp.code_placeholder"}}"
+                              aria-label="{{t $.Localizer "totp.code_placeholder"}}">
+                            <button type="submit" class="btn btn-primary btn-xs"
+                              data-processing-text="{{t $.Localizer "totp.processing"}}">
+                              {{t $.Localizer "totp.verify_button"}}
+                            </button>
+                          </form>
+                          {{end}}
+                          <p class="totp-form-message" role="status"></p>
+                        </dd>
+                        <dt>{{t $.Localizer "totp.reset_title"}}：</dt>
+                        <dd>
+                          <p class="text-warning">{{t $.Localizer "totp.reset_warning"}}</p>
+                          <p class="text-muted">{{t $.Localizer "totp.issuer_scope_help"}}</p>
+                          {{if .TOTPManageAllowed}}
+                          <form method="post"
+                            action="{{urlfor "TOTPController.Reset" ":id" .ID}}"
+                            class="totp-json-form totp-reset-form"
+                            data-confirm-message="{{t $.Localizer "totp.reset_confirm"}}">
+                            <input type="hidden" name="_csrf" value="{{$.SessionCSRFToken}}">
+                            <input type="hidden" name="idempotency_key" value="">
+                            <input type="text" name="confirmation"
+                              class="form-control form-control-sm"
+                              required maxlength="128" autocomplete="off"
+                              placeholder="{{t $.Localizer "certificate.confirm_name"}}"
+                              aria-label="{{t $.Localizer "certificate.confirm_name"}}">
+                            <button type="submit" class="btn btn-danger btn-xs"
+                              data-processing-text="{{t $.Localizer "totp.processing"}}">
+                              {{t $.Localizer "totp.reset_button"}}
+                            </button>
+                          </form>
+                          {{end}}
+                          <p class="totp-form-message" role="status"></p>
                         </dd>
                         {{end}}
                       </dl>
@@ -526,6 +603,156 @@ $('.totp-qr-form').on('submit', function (event) {
   });
 });
 
+function createTOTPIdempotencyKey() {
+  if (window.crypto && typeof window.crypto.randomUUID === 'function') {
+    return window.crypto.randomUUID();
+  }
+  var bytes = new Uint8Array(16);
+  window.crypto.getRandomValues(bytes);
+  return Array.prototype.map.call(bytes, function (value) {
+    return value.toString(16).padStart(2, '0');
+  }).join('');
+}
+
+function clearTOTPSecret(container) {
+  if (!container) {
+    return;
+  }
+  if (container.dataset.clearTimer) {
+    window.clearTimeout(Number(container.dataset.clearTimer));
+    delete container.dataset.clearTimer;
+  }
+  var value = container.querySelector('.totp-secret-value');
+  var copyButton = container.querySelector('.totp-secret-copy');
+  if (value) {
+    value.textContent = value.dataset.mask || '';
+  }
+  if (copyButton) {
+    copyButton.hidden = true;
+    delete copyButton.dataset.secret;
+  }
+}
+
+function showTOTPSecret(container, secret) {
+  clearTOTPSecret(container);
+  var value = container.querySelector('.totp-secret-value');
+  var copyButton = container.querySelector('.totp-secret-copy');
+  value.textContent = secret;
+  copyButton.dataset.secret = secret;
+  copyButton.hidden = false;
+  var timeout = Number(container.dataset.secretTimeout || '60000');
+  container.dataset.clearTimer = String(window.setTimeout(function () {
+    clearTOTPSecret(container);
+  }, timeout));
+}
+
+$('.totp-json-form').on('submit', function (event) {
+  event.preventDefault();
+  var form = this;
+  var isReset = form.classList.contains('totp-reset-form');
+  if (isReset && !window.confirm(form.dataset.confirmMessage)) {
+    return;
+  }
+  if (isReset) {
+    var idempotencyInput = form.querySelector('input[name="idempotency_key"]');
+    if (!idempotencyInput.value) {
+      idempotencyInput.value = createTOTPIdempotencyKey();
+    }
+  }
+
+  var button = form.querySelector('button[type="submit"]');
+  var originalButtonText = button.textContent;
+  var message = form.parentElement.querySelector('.totp-form-message');
+  message.textContent = '';
+  message.className = 'totp-form-message';
+  button.disabled = true;
+  button.textContent = button.dataset.processingText;
+
+  fetch(form.action, {
+    method: 'POST',
+    body: new FormData(form),
+    credentials: 'same-origin',
+    headers: {
+      'Accept': 'application/json'
+    }
+  }).then(function (response) {
+    return response.json().catch(function () {
+      return {
+        ok: false,
+        message: '{{t .Localizer "totp.operation_failed"}}'
+      };
+    }).then(function (payload) {
+      if (!response.ok || !payload.ok) {
+        throw new Error(payload.message || '{{t .Localizer "totp.operation_failed"}}');
+      }
+      return payload;
+    });
+  }).then(function (payload) {
+    message.textContent = payload.message || '{{t .Localizer "totp.operation_success"}}';
+    message.classList.add('text-success');
+    if (payload.base32_secret) {
+      showTOTPSecret(
+        form.closest('.modal').querySelector('.totp-secret-output'),
+        payload.base32_secret
+      );
+    }
+    if (form.classList.contains('totp-verify-form')) {
+      form.querySelector('input[name="code"]').value = '';
+    }
+    if (isReset) {
+      form.querySelector('input[name="idempotency_key"]').value = '';
+    }
+  }).catch(function (requestError) {
+    message.textContent = requestError.message;
+    message.classList.add('text-danger');
+  }).finally(function () {
+    if (form.classList.contains('totp-verify-form')) {
+      form.querySelector('input[name="code"]').value = '';
+    }
+    button.disabled = false;
+    button.textContent = originalButtonText;
+  });
+});
+
+$('.totp-secret-copy').on('click', function () {
+  var button = this;
+  var secret = button.dataset.secret;
+  if (!secret) {
+    return;
+  }
+  var copyPromise;
+  if (window.isSecureContext && navigator.clipboard) {
+    copyPromise = navigator.clipboard.writeText(secret);
+  } else {
+    copyPromise = new Promise(function (resolve, reject) {
+      var temporary = document.createElement('textarea');
+      temporary.value = secret;
+      temporary.setAttribute('readonly', '');
+      temporary.style.position = 'fixed';
+      temporary.style.left = '-9999px';
+      document.body.appendChild(temporary);
+      temporary.select();
+      var copied = document.execCommand('copy');
+      temporary.value = '';
+      temporary.remove();
+      if (copied) {
+        resolve();
+      } else {
+        reject(new Error('{{t .Localizer "totp.copy_failed"}}'));
+      }
+    });
+  }
+  copyPromise.then(function () {
+    var message = button.closest('dd').querySelector('.totp-form-message');
+    message.textContent = '{{t .Localizer "totp.copy_success"}}';
+    message.className = 'totp-form-message text-success';
+  }).catch(function (copyError) {
+    var message = button.closest('dd').querySelector('.totp-form-message');
+    message.textContent = copyError.message;
+    message.className = 'totp-form-message text-danger';
+  });
+});
+
 function updateProvisioningPermissionHelp() {
   var permission = $('input[name="PermissionType"]:checked').val();
   $('#permission-normal-help').prop('hidden', permission !== 'normal');
@@ -544,6 +771,18 @@ $('.modal').on('hidden.bs.modal', function () {
       image.removeAttribute('src');
       image.hidden = true;
     }
+  });
+  $(this).find('.totp-secret-output').each(function () {
+    clearTOTPSecret(this);
+  });
+  $(this).find('input[name="code"]').val('');
+  $(this).find('input[name="idempotency_key"]').val('');
+});
+
+window.addEventListener('pagehide', function () {
+  document.querySelectorAll('.totp-secret-output').forEach(clearTOTPSecret);
+  document.querySelectorAll('input[name="code"]').forEach(function (input) {
+    input.value = '';
   });
 });
 </script>

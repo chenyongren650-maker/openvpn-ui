@@ -96,6 +96,29 @@ func main() {
 	if err != nil {
 		panic(fmt.Errorf("initialize certificate lifecycle service: %w", err))
 	}
+	clientSettings := models.OVClientConfig{Profile: "default"}
+	if err := clientSettings.Read("Profile"); err != nil {
+		panic(fmt.Errorf("read TOTP issuer configuration: %w", err))
+	}
+	totpService, err := services.NewTOTPService(
+		db,
+		services.TOTPServiceConfig{
+			OATHSecretsPath: filepath.Join(
+				state.GlobalCfg.OVConfigPath,
+				"clients",
+				"oath.secrets",
+			),
+			QRCodeDirectory: filepath.Join(
+				state.GlobalCfg.OVConfigPath,
+				"clients",
+			),
+			QRCodeBinary: "/opt/scripts/qrencode",
+			Issuer:       clientSettings.TFAIssuer,
+		},
+	)
+	if err != nil {
+		panic(fmt.Errorf("initialize TOTP service: %w", err))
+	}
 
 	allocationService, err := services.NewRestrictedIPAllocationService(
 		db,
@@ -126,7 +149,12 @@ func main() {
 		panic(fmt.Errorf("initialize VPN user provisioning service: %w", err))
 	}
 
-	routers.Init(*configDir, lifecycleService, provisioningService)
+	routers.Init(
+		*configDir,
+		lifecycleService,
+		provisioningService,
+		totpService,
+	)
 
 	lib.AddFuncMaps()
 	web.Run()

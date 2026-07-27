@@ -17,6 +17,7 @@ func Init(
 	configDir string,
 	lifecycleService *services.CertificateLifecycleService,
 	provisioningService *services.UserCertificateProvisioningService,
+	totpService *services.TOTPService,
 ) {
 	web.SetStaticPath("/swagger", "swagger")
 	web.Router("/", &controllers.MainController{})
@@ -31,11 +32,27 @@ func Init(
 	web.Router("/ov/clientconfig", &controllers.OVClientConfigController{ConfigDir: configDir})
 	web.Router("/easyrsa/config", &controllers.EasyRSAConfigController{ConfigDir: configDir})
 	web.Router("/dangerzone", &controllers.DangerController{})
+	web.Router(
+		"/certificates/:id/totp-secret",
+		&controllers.TOTPController{Service: totpService},
+		"post:Secret",
+	)
+	web.Router(
+		"/certificates/:id/totp-verify",
+		&controllers.TOTPController{Service: totpService},
+		"post:Verify",
+	)
+	web.Router(
+		"/certificates/:id/totp-reset",
+		&controllers.TOTPController{Service: totpService},
+		"post:Reset",
+	)
 
 	web.Include(&controllers.CertificatesController{
 		ConfigDir:           configDir,
 		LifecycleService:    lifecycleService,
 		ProvisioningService: provisioningService,
+		TOTPService:         totpService,
 	})
 	web.Include(&controllers.DangerController{})
 	web.Include(&controllers.OVConfigController{ConfigDir: configDir})

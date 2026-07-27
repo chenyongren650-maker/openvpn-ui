@@ -208,8 +208,8 @@ func CreateDefaultOVClientConfig(configDir string, ovConfigPath string, address 
 			AuthNoCache:       "auth-nocache",
 			TlsClient:         "tls-client",
 			Verbose:           "3",
-			AuthUserPass:      "",                 // "auth-user-pass" when 2fa
-			TFAIssuer:         "MFA%20OpenVPN-UI", // 2FA issuer
+			AuthUserPass:      "",        // "auth-user-pass" when 2fa
+			TFAIssuer:         "ZHISUAN", // 2FA issuer for newly created or reset identities
 			CustomConfOne:     "#Custom Option One",
 			CustomConfTwo:     "#Custom Option Two",
 			CustomConfThree:   "#Custom Option Three",

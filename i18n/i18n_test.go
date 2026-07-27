@@ -13,8 +13,8 @@ import (
 )
 
 var (
-	referencedGoKeyPattern       = regexp.MustCompile(`\.T\(\s*"((?:alert|api|breadcrumb|certificate|client|client_config|common|config|connection|dashboard|easyrsa|error|login|logout|logs|maintenance|nav|navigation|notifications|oauth|profile|server|settings|theme|validation)(?:\.[a-z0-9_]+)+)"`)
-	referencedTemplateKeyPattern = regexp.MustCompile(`\{\{\s*t\s+(?:\.|\$\.)Localizer\s+"((?:alert|api|breadcrumb|certificate|client|client_config|common|config|connection|dashboard|easyrsa|error|login|logout|logs|maintenance|nav|navigation|notifications|oauth|profile|server|settings|theme|validation)(?:\.[a-z0-9_]+)+)"`)
+	referencedGoKeyPattern       = regexp.MustCompile(`\.T\(\s*"((?:alert|api|breadcrumb|certificate|client|client_config|common|config|connection|dashboard|easyrsa|error|login|logout|logs|maintenance|nav|navigation|notifications|oauth|profile|server|settings|theme|totp|validation)(?:\.[a-z0-9_]+)+)"`)
+	referencedTemplateKeyPattern = regexp.MustCompile(`\{\{\s*t\s+(?:\.|\$\.)Localizer\s+"((?:alert|api|breadcrumb|certificate|client|client_config|common|config|connection|dashboard|easyrsa|error|login|logout|logs|maintenance|nav|navigation|notifications|oauth|profile|server|settings|theme|totp|validation)(?:\.[a-z0-9_]+)+)"`)
 )
 
 func TestLoadCatalogAndTranslate(t *testing.T) {
