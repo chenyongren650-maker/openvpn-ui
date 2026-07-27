@@ -1,12 +1,13 @@
 #!/bin/bash
 #VERSION 1.4 by d3vilh@github.com aka Mr. Philipp. Updated with Easyrsa 3 support.
 # Exit immediately if a command exits with a non-zero status.
-set -e
+set -euo pipefail
+umask 077
 
 # .ovpn file path
-CERT_NAME=$1
-CERT_IP=$2
-CERT_PASS=$3
+CERT_NAME=${1:-}
+CERT_IP=${2:-}
+CERT_PASS=${3:-}
 # These VARS shoud be in your ENV before running certgen: TFA_NAME, ISSUER, EASYRSA_CERT_EXPIRE, EASYRSA_REQ_EMAIL, EASYRSA_REQ_COUNTRY, EASYRSA_REQ_PROVINCE, EASYRSA_REQ_CITY, EASYRSA_REQ_ORG, EASYRSA_REQ_OU
 
 EASY_RSA=$(grep -E "^EasyRsaPath\s*=" ../openvpn-ui/conf/app.conf | cut -d= -f2 | tr -d '"' | tr -d '[:space:]')
@@ -85,8 +86,43 @@ $TLS_AUTH
 echo -e "OpenVPN Client configuration successfully generated!\nCheckout openvpn-server/clients/$CERT_NAME.ovpn"
 
 # Check if $TFA_NAME was specified and not equal to "none". then create 2FA and QR code
-if [[ ! -z $TFA_NAME ]] && [[ $TFA_NAME != "none" ]]; then
+if [[ -n ${TFA_NAME:-} ]] && [[ $TFA_NAME != "none" ]]; then
     echo -e "Generating 2FA ...\nName: $TFA_NAME\nIssuer: $TFA_ISSUER"
+
+    if [[ ! $TFA_NAME =~ ^[A-Za-z0-9][A-Za-z0-9._@-]{0,127}$ ]] \
+        || [[ -z ${TFA_ISSUER:-} ]] \
+        || [[ ${#TFA_ISSUER} -gt 128 ]] \
+        || [[ $TFA_ISSUER == *$'\n'* ]] \
+        || [[ $TFA_ISSUER == *$'\r'* ]]; then
+        echo 'Invalid 2FA identity metadata. Exiting...'
+        exit 1
+    fi
+
+    OATH_LOCK="${OATH_SECRETS}.lock"
+    if [[ -L $OATH_LOCK ]]; then
+        echo 'Invalid 2FA lock file. Exiting...'
+        exit 1
+    fi
+    touch "$OATH_LOCK"
+    chmod 600 "$OATH_LOCK"
+    exec 9>>"$OATH_LOCK"
+    flock -x 9
+
+    if [[ -L $OATH_SECRETS ]] \
+        || { [[ -e $OATH_SECRETS ]] && [[ ! -f $OATH_SECRETS ]]; }; then
+        echo 'Invalid 2FA identity file. Exiting...'
+        exit 1
+    fi
+    if [[ -f $OATH_SECRETS ]]; then
+        chmod 600 "$OATH_SECRETS"
+        MATCH_COUNT=$(awk -F: -v target="$TFA_NAME" \
+            '$1 == target { count++ } END { print count + 0 }' \
+            "$OATH_SECRETS")
+        if [[ $MATCH_COUNT -ne 0 ]]; then
+            echo 'The exact 2FA identity already exists. Exiting...'
+            exit 1
+        fi
+    fi
 
     # Userhash. Random 30 chars
     USERHASH=$(head -c 10 /dev/urandom | openssl sha256 | cut -d ' ' -f2 | cut -b 1-30)
@@ -95,13 +131,62 @@ if [[ ! -z $TFA_NAME ]] && [[ $TFA_NAME != "none" ]]; then
     BASE32=$(oathtool --totp -v "$USERHASH" | grep Base32 | awk '{print $3}')
 
     # QRCODE STRING
-    QRSTRING="otpauth://totp/$TFA_ISSUER:$TFA_NAME?secret=$BASE32"
+    QRSTRING="otpauth://totp/$TFA_ISSUER:$TFA_NAME?secret=$BASE32&issuer=$TFA_ISSUER"
+
+    QR_TEMP=$(mktemp "$OPENVPN_DIR/clients/.${CERT_NAME}.qr.XXXXXX")
+    OATH_TEMP=$(mktemp "$OPENVPN_DIR/clients/.oath.secrets.XXXXXX")
+    OATH_BACKUP=$(mktemp "$OPENVPN_DIR/clients/.oath.secrets.backup.XXXXXX")
+    OATH_EXISTED=0
+    cleanup_totp_files() {
+        rm -f -- "$QR_TEMP" "$OATH_TEMP" "$OATH_BACKUP"
+        unset USERHASH BASE32 QRSTRING
+    }
+    trap cleanup_totp_files EXIT
+    chmod 600 "$QR_TEMP" "$OATH_TEMP" "$OATH_BACKUP"
 
     # QR code for user to pass to Google Authenticator or OpenVPN-UI
-    /opt/scripts/qrencode "$QRSTRING" > "$OPENVPN_DIR/clients/$CERT_NAME.png"
+    /opt/scripts/qrencode "$QRSTRING" > "$QR_TEMP"
+    if [[ ! -s $QR_TEMP ]]; then
+        echo '2FA QR code generation failed. Exiting...'
+        exit 1
+    fi
 
-    # New string for secrets file
-    printf '%s:%s\n' "$TFA_NAME" "$USERHASH" >> "$OATH_SECRETS"
+    if [[ -f $OATH_SECRETS ]]; then
+        OATH_EXISTED=1
+        cp -- "$OATH_SECRETS" "$OATH_TEMP"
+        cp -- "$OATH_SECRETS" "$OATH_BACKUP"
+    fi
+    printf '%s:%s\n' "$TFA_NAME" "$USERHASH" >> "$OATH_TEMP"
+    chmod 600 "$OATH_TEMP"
+    MATCH_COUNT=$(awk -F: -v target="$TFA_NAME" '
+        NF != 2 { invalid = 1 }
+        $1 == target { count++ }
+        END {
+            if (invalid || count != 1) {
+                exit 1
+            }
+        }' "$OATH_TEMP" && printf '1')
+    if [[ $MATCH_COUNT != "1" ]]; then
+        echo '2FA identity validation failed. Exiting...'
+        exit 1
+    fi
+
+    mv -- "$OATH_TEMP" "$OATH_SECRETS"
+    chmod 600 "$OATH_SECRETS"
+    if ! mv -- "$QR_TEMP" "$OPENVPN_DIR/clients/$CERT_NAME.png"; then
+        if [[ $OATH_EXISTED -eq 1 ]]; then
+            mv -- "$OATH_BACKUP" "$OATH_SECRETS"
+            chmod 600 "$OATH_SECRETS"
+        else
+            rm -f -- "$OATH_SECRETS"
+        fi
+        echo '2FA QR code replacement failed. Authentication data restored.'
+        exit 1
+    fi
+    chmod 600 "$OPENVPN_DIR/clients/$CERT_NAME.png"
+    trap - EXIT
+    cleanup_totp_files
+    flock -u 9
 
     else
     echo 'No 2FA specified. exiting'

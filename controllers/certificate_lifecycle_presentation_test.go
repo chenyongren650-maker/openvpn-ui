@@ -116,3 +116,59 @@ func TestGeneratedClientConfigurationUsesPrivateFilePermissions(t *testing.T) {
 		t.Fatalf("client configuration permissions = %04o, want 0600", permissions)
 	}
 }
+
+func TestTOTPManagementPageUsesProtectedPOSTFlows(t *testing.T) {
+	data, err := os.ReadFile(filepath.Join("..", "views", "certificates.html"))
+	if err != nil {
+		t.Fatalf("read certificate template: %v", err)
+	}
+	page := string(data)
+	for _, required := range []string{
+		`"TOTPController.Secret" ":id" .ID`,
+		`"TOTPController.Verify" ":id" .ID`,
+		`"TOTPController.Reset" ":id" .ID`,
+		`name="_csrf" value="{{$.SessionCSRFToken}}"`,
+		`name="idempotency_key" value=""`,
+		`class="totp-json-form totp-secret-form"`,
+		`class="totp-json-form totp-verify-form"`,
+		`class="totp-json-form totp-reset-form"`,
+		`URL.revokeObjectURL`,
+		`clearTOTPSecret`,
+		`window.addEventListener('pagehide'`,
+		`window.crypto.randomUUID`,
+		`{{t $.Localizer "totp.secret_mask"}}`,
+	} {
+		if !strings.Contains(page, required) {
+			t.Fatalf("TOTP management page is missing %q", required)
+		}
+	}
+	for _, prohibited := range []string{
+		`localStorage`,
+		`sessionStorage`,
+		`console.log`,
+		`method="get"`,
+		`name="hex_seed"`,
+	} {
+		if strings.Contains(page, prohibited) {
+			t.Fatalf("TOTP management page contains prohibited fragment %q", prohibited)
+		}
+	}
+
+	routerData, err := os.ReadFile(filepath.Join("..", "routers", "router.go"))
+	if err != nil {
+		t.Fatalf("read explicit routes: %v", err)
+	}
+	routes := string(routerData)
+	for _, required := range []string{
+		`"/certificates/:id/totp-secret"`,
+		`"/certificates/:id/totp-verify"`,
+		`"/certificates/:id/totp-reset"`,
+		`"post:Secret"`,
+		`"post:Verify"`,
+		`"post:Reset"`,
+	} {
+		if !strings.Contains(routes, required) {
+			t.Fatalf("TOTP routes are missing %q", required)
+		}
+	}
+}

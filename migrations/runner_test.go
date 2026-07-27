@@ -29,8 +29,8 @@ func TestUpgradePreservesLegacyTablesAndCreatesFoundationSchema(t *testing.T) {
 	if err != nil {
 		t.Fatalf("run migration: %v", err)
 	}
-	if !reflect.DeepEqual(result.AppliedVersions, []int64{1, 2, 3, 4, 5}) {
-		t.Fatalf("applied versions = %v, want [1 2 3 4 5]", result.AppliedVersions)
+	if !reflect.DeepEqual(result.AppliedVersions, []int64{1, 2, 3, 4, 5, 6}) {
+		t.Fatalf("applied versions = %v, want [1 2 3 4 5 6]", result.AppliedVersions)
 	}
 	if result.BackupPath == "" {
 		t.Fatal("expected a pre-migration backup")
@@ -47,6 +47,7 @@ func TestUpgradePreservesLegacyTablesAndCreatesFoundationSchema(t *testing.T) {
 		"ip_allocations",
 		"vpn_users",
 		"ip_allocation_reservations",
+		"totp_reset_operations",
 	} {
 		assertTableExists(t, db, tableName, true)
 	}
@@ -78,8 +79,8 @@ func TestMigrationIsIdempotent(t *testing.T) {
 		t.Fatalf("second migration run: %v", err)
 	}
 
-	if !reflect.DeepEqual(firstResult.AppliedVersions, []int64{1, 2, 3, 4, 5}) {
-		t.Fatalf("first applied versions = %v, want [1 2 3 4 5]", firstResult.AppliedVersions)
+	if !reflect.DeepEqual(firstResult.AppliedVersions, []int64{1, 2, 3, 4, 5, 6}) {
+		t.Fatalf("first applied versions = %v, want [1 2 3 4 5 6]", firstResult.AppliedVersions)
 	}
 	if len(secondResult.AppliedVersions) != 0 {
 		t.Fatalf("second applied versions = %v, want none", secondResult.AppliedVersions)
@@ -102,8 +103,8 @@ func TestMigrationIsIdempotent(t *testing.T) {
 	if err := db.QueryRow(`SELECT COUNT(*) FROM schema_migrations`).Scan(&migrationCount); err != nil {
 		t.Fatalf("count migration rows: %v", err)
 	}
-	if migrationCount != 5 {
-		t.Fatalf("migration row count = %d, want 5", migrationCount)
+	if migrationCount != 6 {
+		t.Fatalf("migration row count = %d, want 6", migrationCount)
 	}
 }
 
@@ -149,7 +150,7 @@ func TestConcurrentMigrationRunsApplyOnceAndCreateOneBackup(t *testing.T) {
 			appliedRuns++
 			if !reflect.DeepEqual(
 				result.AppliedVersions,
-				[]int64{1, 2, 3, 4, 5},
+				[]int64{1, 2, 3, 4, 5, 6},
 			) {
 				t.Fatalf(
 					"concurrent applied versions = %v",
@@ -423,8 +424,8 @@ func TestVPNUsersAndReservationMigrationsEnforceRelationships(t *testing.T) {
 	if err != nil {
 		t.Fatalf("apply vpn user and reservation migrations: %v", err)
 	}
-	if !reflect.DeepEqual(result.AppliedVersions, []int64{4, 5}) {
-		t.Fatalf("applied versions = %v, want [4 5]", result.AppliedVersions)
+	if !reflect.DeepEqual(result.AppliedVersions, []int64{4, 5, 6}) {
+		t.Fatalf("applied versions = %v, want [4 5 6]", result.AppliedVersions)
 	}
 	if result.BackupPath == "" {
 		t.Fatal("expected a verified pre-v4 backup")
@@ -434,6 +435,7 @@ func TestVPNUsersAndReservationMigrationsEnforceRelationships(t *testing.T) {
 	defer db.Close()
 	assertTableExists(t, db, "vpn_users", true)
 	assertTableExists(t, db, "ip_allocation_reservations", true)
+	assertTableExists(t, db, "totp_reset_operations", true)
 
 	if _, err := db.Exec(`INSERT INTO vpn_users (
 		id, display_name, username, email, department, notes
@@ -513,9 +515,136 @@ func TestVPNUsersAndReservationDownSQLIsIsolatedAndReversible(t *testing.T) {
 		t.Fatalf("commit isolated rollback verification: %v", err)
 	}
 	assertTableExists(t, db, "ip_allocation_reservations", false)
+	assertTableExists(t, db, "totp_reset_operations", false)
 	assertTableExists(t, db, "vpn_users", false)
 	assertTableExists(t, db, "certificates", true)
 	assertTableExists(t, db, "ip_allocations", true)
+}
+
+func TestTOTPResetOperationsMigrationConstraintsAndRollback(t *testing.T) {
+	databasePath := filepath.Join(t.TempDir(), "db", "data.db")
+	if _, err := run(
+		context.Background(),
+		databasePath,
+		registeredMigrations[:5],
+		fixedClock,
+	); err != nil {
+		t.Fatalf("initialize v5 database: %v", err)
+	}
+	db := openTestDatabase(t, databasePath)
+	if _, err := db.Exec(`INSERT INTO certificates (
+		id, common_name, serial_number, status
+	) VALUES (1, 'totp-reset-client', 'E1', 'valid')`); err != nil {
+		db.Close()
+		t.Fatalf("seed v5 certificate: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("close v5 database: %v", err)
+	}
+
+	result, err := run(
+		context.Background(),
+		databasePath,
+		registeredMigrations,
+		fixedClock,
+	)
+	if err != nil {
+		t.Fatalf("apply TOTP reset migration: %v", err)
+	}
+	if !reflect.DeepEqual(result.AppliedVersions, []int64{6}) {
+		t.Fatalf("applied versions = %v, want [6]", result.AppliedVersions)
+	}
+	if result.BackupPath == "" {
+		t.Fatal("expected a verified pre-v6 backup")
+	}
+
+	db = openTestDatabase(t, databasePath)
+	defer db.Close()
+	assertTableExists(t, db, "totp_reset_operations", true)
+	if _, err := db.Exec(`INSERT INTO totp_reset_operations (
+		certificate_id, idempotency_key, request_id, status
+	) VALUES (1, 'idempotency-key-0001', 'request-1', 'prepared')`); err != nil {
+		t.Fatalf("insert prepared reset operation: %v", err)
+	}
+	if _, err := db.Exec(`INSERT INTO totp_reset_operations (
+		certificate_id, idempotency_key, request_id, status
+	) VALUES (1, 'idempotency-key-0002', 'request-2', 'prepared')`); err == nil {
+		t.Fatal("expected concurrent prepared reset operation to fail")
+	}
+	if _, err := db.Exec(`UPDATE totp_reset_operations
+		SET status = 'completed', completed_at = CURRENT_TIMESTAMP
+		WHERE certificate_id = 1`); err != nil {
+		t.Fatalf("complete first reset operation: %v", err)
+	}
+	if _, err := db.Exec(`INSERT INTO totp_reset_operations (
+		certificate_id, idempotency_key, request_id, status
+	) VALUES (1, 'idempotency-key-0002', 'request-2', 'prepared')`); err != nil {
+		t.Fatalf("insert next reset operation: %v", err)
+	}
+	if _, err := db.Exec(`INSERT INTO totp_reset_operations (
+		certificate_id, idempotency_key, request_id, status
+	) VALUES (999, 'idempotency-key-foreign', 'request-3', 'failed')`); err == nil {
+		t.Fatal("expected missing certificate foreign key to fail")
+	}
+	if _, err := db.Exec(`UPDATE totp_reset_operations
+		SET status = 'invalid' WHERE idempotency_key = 'idempotency-key-0002'`); err == nil {
+		t.Fatal("expected invalid reset operation status to fail")
+	}
+
+	rows, err := db.Query(`PRAGMA table_info(totp_reset_operations)`)
+	if err != nil {
+		t.Fatalf("read TOTP reset operation columns: %v", err)
+	}
+	forbiddenColumns := map[string]bool{
+		"seed":     true,
+		"secret":   true,
+		"code":     true,
+		"password": true,
+		"qr_uri":   true,
+		"base32":   true,
+		"hex_seed": true,
+	}
+	for rows.Next() {
+		var columnID int
+		var columnName, columnType string
+		var notNull, primaryKey int
+		var defaultValue sql.NullString
+		if err := rows.Scan(
+			&columnID,
+			&columnName,
+			&columnType,
+			&notNull,
+			&defaultValue,
+			&primaryKey,
+		); err != nil {
+			rows.Close()
+			t.Fatalf("scan TOTP reset operation column: %v", err)
+		}
+		if forbiddenColumns[strings.ToLower(columnName)] {
+			rows.Close()
+			t.Fatalf("sensitive column %q exists in TOTP reset operations", columnName)
+		}
+	}
+	if err := rows.Close(); err != nil {
+		t.Fatalf("close TOTP reset operation columns: %v", err)
+	}
+
+	tx, err := db.Begin()
+	if err != nil {
+		t.Fatalf("begin isolated v6 rollback: %v", err)
+	}
+	for _, statement := range registeredMigrations[5].Down {
+		if _, err := tx.Exec(statement); err != nil {
+			tx.Rollback()
+			t.Fatalf("execute v6 rollback statement: %v", err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatalf("commit isolated v6 rollback: %v", err)
+	}
+	assertTableExists(t, db, "totp_reset_operations", false)
+	assertTableExists(t, db, "totp_identities", true)
+	assertTableExists(t, db, "certificates", true)
 }
 
 func TestFailedMigrationRollsBackEntirePendingBatch(t *testing.T) {
@@ -524,7 +653,7 @@ func TestFailedMigrationRollsBackEntirePendingBatch(t *testing.T) {
 
 	failingMigrations := append([]Migration{}, registeredMigrations...)
 	failingMigrations = append(failingMigrations, Migration{
-		Version: 6,
+		Version: 7,
 		Name:    "forced_failure",
 		Up: []string{
 			`CREATE TABLE should_rollback (id INTEGER PRIMARY KEY)`,
@@ -537,7 +666,7 @@ func TestFailedMigrationRollsBackEntirePendingBatch(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected migration failure")
 	}
-	if !strings.Contains(err.Error(), "migration 6 (forced_failure), statement 2") {
+	if !strings.Contains(err.Error(), "migration 7 (forced_failure), statement 2") {
 		t.Fatalf("unexpected migration error: %v", err)
 	}
 	if len(result.AppliedVersions) != 0 {
@@ -557,6 +686,7 @@ func TestFailedMigrationRollsBackEntirePendingBatch(t *testing.T) {
 		"ip_allocations",
 		"vpn_users",
 		"ip_allocation_reservations",
+		"totp_reset_operations",
 		"should_rollback",
 	} {
 		assertTableExists(t, db, tableName, false)
@@ -612,6 +742,7 @@ func TestNewDatabaseDoesNotCreateMeaninglessBackup(t *testing.T) {
 		"ip_allocations",
 		"vpn_users",
 		"ip_allocation_reservations",
+		"totp_reset_operations",
 	} {
 		assertTableExists(t, db, tableName, true)
 	}

@@ -48,16 +48,19 @@ type CertificatesController struct {
 	ConfigDir           string
 	LifecycleService    *services.CertificateLifecycleService
 	ProvisioningService *services.UserCertificateProvisioningService
+	TOTPService         *services.TOTPService
 }
 
 type CertificatePageRecord struct {
 	*lib.Cert
-	ID              int64
-	CommonName      string
-	LifecycleStatus string
-	DownloadAllowed bool
-	RenewAllowed    bool
-	Protected       bool
+	ID                int64
+	CommonName        string
+	LifecycleStatus   string
+	DownloadAllowed   bool
+	RenewAllowed      bool
+	TOTPManageAllowed bool
+	Protected         bool
+	TOTP              *services.TOTPIdentityMetadata
 }
 
 func (c *CertificatesController) NestPrepare() {
@@ -145,38 +148,57 @@ func (c *CertificatesController) Get() {
 
 // @router /certificates/:id/totp-qr [post]
 func (c *CertificatesController) TOTPQRCode() {
+	c.Ctx.Output.Header(
+		"Cache-Control",
+		"no-store, no-cache, must-revalidate, private",
+	)
+	c.Ctx.Output.Header("Pragma", "no-cache")
+	c.Ctx.Output.Header("Expires", "0")
+	actor := c.lifecycleActor()
 	if !c.ValidSessionCSRF() {
-		c.recordCertificateOperationAudit(
-			services.CertificateAuditActionTOTPQR,
-			c.GetString(":id"),
-			"failed",
-			"csrf_invalid",
-		)
+		if c.TOTPService != nil {
+			_ = c.TOTPService.RecordOperationAudit(
+				c.Ctx.Request.Context(),
+				actor,
+				services.TOTPAuditActionQRCodeView,
+				0,
+				"csrf_invalid",
+			)
+		}
 		c.renderCertificateHTTPError(http.StatusForbidden, "error.csrf_invalid")
 		return
 	}
+	if c.TOTPService == nil {
+		c.renderCertificateHTTPError(
+			http.StatusServiceUnavailable,
+			"totp.service_unavailable",
+		)
+		return
+	}
+	if !services.CanViewTOTPQRCode(actor) {
+		_ = c.TOTPService.RecordOperationAudit(
+			c.Ctx.Request.Context(),
+			actor,
+			services.TOTPAuditActionQRCodeView,
+			0,
+			"permission_denied",
+		)
+		c.renderCertificateHTTPError(http.StatusForbidden, "error.admin_required")
+		return
+	}
 	certificateID, err := c.certificateID()
-	if err != nil || c.LifecycleService == nil {
+	if err != nil {
 		c.renderCertificateHTTPError(http.StatusNotFound, "certificate.not_found")
 		return
 	}
 
 	responseStarted := false
-	err = c.LifecycleService.PerformCertificateTOTPQRCodeView(
+	err = c.TOTPService.PerformQRCodeView(
 		c.Ctx.Request.Context(),
 		certificateID,
 		c.GetString("confirmation"),
-		c.lifecycleActor(),
-		func(certificateState services.CertificateState) error {
-			imagePath := filepath.Join(
-				state.GlobalCfg.OVConfigPath,
-				"clients",
-				certificateState.CommonName+".png",
-			)
-			data, err := os.ReadFile(imagePath)
-			if err != nil {
-				return err
-			}
+		actor,
+		func(data []byte) error {
 			c.Ctx.Output.Header("Content-Type", "image/png")
 			responseStarted = true
 			c.Ctx.Output.Body(data)
@@ -193,23 +215,22 @@ func (c *CertificatesController) TOTPQRCode() {
 	status := http.StatusConflict
 	key := "certificate.qr_view_blocked"
 	switch {
-	case errors.Is(err, services.ErrCertificateNotFound):
+	case errors.Is(err, services.ErrTOTPNotFound):
 		status = http.StatusNotFound
 		key = "certificate.not_found"
-	case errors.Is(err, services.ErrCertificateForbidden):
+	case errors.Is(err, services.ErrTOTPForbidden):
 		status = http.StatusForbidden
 		key = "error.admin_required"
-	case errors.Is(err, services.ErrCertificateConfirmation):
+	case errors.Is(err, services.ErrTOTPConfirmation):
 		status = http.StatusConflict
 		key = "certificate.confirmation_mismatch"
-	case errors.Is(err, os.ErrNotExist):
-		status = http.StatusNotFound
-		key = "certificate.image_not_found"
-	case errors.Is(err, services.ErrCertificateTOTPQRBlocked),
-		errors.Is(err, services.ErrCertificateDownloadBlocked),
-		errors.Is(err, services.ErrCertificateIdentity):
+	case errors.Is(err, services.ErrTOTPQRCodeUnavailable),
+		errors.Is(err, services.ErrTOTPInvalidState):
 		status = http.StatusConflict
 		key = "certificate.qr_view_blocked"
+	case errors.Is(err, services.ErrTOTPAuditUnavailable):
+		status = http.StatusServiceUnavailable
+		key = "error.audit_unavailable"
 	default:
 		status = http.StatusInternalServerError
 		key = "certificate.qr_view_failed"
@@ -241,6 +262,18 @@ func (c *CertificatesController) showCerts() {
 		c.Data["certificates"] = []*CertificatePageRecord{}
 		return
 	}
+	totpMetadata := make(map[int64]services.TOTPIdentityMetadata)
+	if c.TOTPService == nil {
+		logs.Error("ERR_TOTP_SERVICE_UNAVAILABLE")
+	} else {
+		totpMetadata, err = c.TOTPService.ListIdentityMetadata(
+			c.Ctx.Request.Context(),
+		)
+		if err != nil {
+			logs.Error("ERR_TOTP_METADATA_LIST")
+			totpMetadata = make(map[int64]services.TOTPIdentityMetadata)
+		}
+	}
 	stateBySerial := make(map[string]services.CertificateState, len(states))
 	for _, certificateState := range states {
 		stateBySerial[strings.ToUpper(certificateState.SerialNumber)] = certificateState
@@ -266,7 +299,7 @@ func (c *CertificatesController) showCerts() {
 				certificate.Details.LocalIP = certificateState.StaticIP
 			}
 		}
-		pageRecords = append(pageRecords, &CertificatePageRecord{
+		record := &CertificatePageRecord{
 			Cert:            certificate,
 			ID:              certificateState.ID,
 			CommonName:      certificateState.CommonName,
@@ -280,8 +313,19 @@ func (c *CertificatesController) showCerts() {
 				(certificateState.Status == "valid" ||
 					certificateState.Status == "expired") &&
 				certificate.Revocation == "",
+			TOTPManageAllowed: c.canManageCertificates() &&
+				currentIssued &&
+				(certificateState.Status == "valid" ||
+					certificateState.Status == "expired") &&
+				certificate.EntryType == "V" &&
+				certificate.Revocation == "",
 			Protected: certificateState.Protected,
-		})
+		}
+		if metadata, exists := totpMetadata[certificateState.ID]; exists {
+			metadataCopy := metadata
+			record.TOTP = &metadataCopy
+		}
+		pageRecords = append(pageRecords, record)
 	}
 	c.Data["certificates"] = pageRecords
 	cfg := models.EasyRSAConfig{Profile: "default"}

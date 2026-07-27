@@ -343,4 +343,43 @@ var registeredMigrations = []Migration{
 			`DROP TABLE IF EXISTS ip_allocation_reservations`,
 		},
 	},
+	{
+		Version: 6,
+		Name:    "totp_reset_operations",
+		Up: []string{
+			// Reset operations deliberately contain only non-sensitive
+			// coordination state. TOTP seeds remain exclusively in
+			// clients/oath.secrets.
+			`CREATE TABLE totp_reset_operations (
+				id INTEGER PRIMARY KEY AUTOINCREMENT,
+				certificate_id INTEGER NOT NULL,
+				idempotency_key TEXT NOT NULL,
+				request_id TEXT NOT NULL,
+				status TEXT NOT NULL DEFAULT 'prepared'
+					CHECK (status IN (
+						'prepared',
+						'completed',
+						'failed',
+						'compensation_required'
+					)),
+				error_summary TEXT NOT NULL DEFAULT '',
+				created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+				updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+				completed_at DATETIME,
+				FOREIGN KEY (certificate_id) REFERENCES certificates(id)
+					ON UPDATE CASCADE ON DELETE RESTRICT,
+				UNIQUE (certificate_id, idempotency_key)
+			)`,
+			`CREATE UNIQUE INDEX idx_totp_reset_operations_active_certificate
+				ON totp_reset_operations(certificate_id)
+				WHERE status IN ('prepared', 'compensation_required')`,
+			`CREATE INDEX idx_totp_reset_operations_status
+				ON totp_reset_operations(status)`,
+			`CREATE INDEX idx_totp_reset_operations_request_id
+				ON totp_reset_operations(request_id)`,
+		},
+		Down: []string{
+			`DROP TABLE IF EXISTS totp_reset_operations`,
+		},
+	},
 }
