@@ -36,7 +36,8 @@ func InitDB() error {
 	if err := orm.RegisterDriver("sqlite3", orm.DRSqlite); err != nil {
 		return fmt.Errorf("register SQLite driver: %w", err)
 	}
-	dbSource := "file:" + dbPath + "?_busy_timeout=5000&_foreign_keys=on"
+	dbSource := "file:" + dbPath +
+		"?_busy_timeout=5000&_foreign_keys=on&_txlock=immediate"
 
 	if err := orm.RegisterDataBase("default", "sqlite3", dbSource); err != nil {
 		return fmt.Errorf("register SQLite database: %w", err)

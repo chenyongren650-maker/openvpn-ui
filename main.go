@@ -97,7 +97,36 @@ func main() {
 		panic(fmt.Errorf("initialize certificate lifecycle service: %w", err))
 	}
 
-	routers.Init(*configDir, lifecycleService)
+	allocationService, err := services.NewRestrictedIPAllocationService(
+		db,
+		services.RestrictedIPAllocationConfig{
+			StaticClientsDir: filepath.Join(
+				state.GlobalCfg.OVConfigPath,
+				"staticclients",
+			),
+			IPPPersistencePath: filepath.Join(
+				state.GlobalCfg.OVConfigPath,
+				"pki",
+				"ipp.txt",
+			),
+			ManagementNetwork: state.GlobalCfg.MINetwork,
+			ManagementAddress: state.GlobalCfg.MIAddress,
+		},
+	)
+	if err != nil {
+		panic(fmt.Errorf("initialize restricted IP allocation service: %w", err))
+	}
+	provisioningService, err := services.NewUserCertificateProvisioningService(
+		db,
+		allocationService,
+		services.CertificateCreationExecutorFunc(lib.CreateCertificate),
+		lifecycleService,
+	)
+	if err != nil {
+		panic(fmt.Errorf("initialize VPN user provisioning service: %w", err))
+	}
+
+	routers.Init(*configDir, lifecycleService, provisioningService)
 
 	lib.AddFuncMaps()
 	web.Run()

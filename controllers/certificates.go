@@ -24,24 +24,30 @@ import (
 )
 
 type NewCertParams struct {
-	Name       string `form:"Name" valid:"Required;"`
-	Staticip   string `form:"staticip"`
-	Passphrase string `form:"passphrase"`
-	ExpireDays string `form:"EasyRSACertExpire"`
-	Email      string `form:"EasyRSAReqEmail"`
-	Country    string `form:"EasyRSAReqCountry"`
-	Province   string `form:"EasyRSAReqProvince"`
-	City       string `form:"EasyRSAReqCity"`
-	Org        string `form:"EasyRSAReqOrg"`
-	OrgUnit    string `form:"EasyRSAReqOu"`
-	TFAName    string `form:"TFAName"`
-	TFAIssuer  string `form:"TFAIssuer"`
+	DisplayName    string `form:"DisplayName" valid:"Required;"`
+	Username       string `form:"Username" valid:"Required;"`
+	Department     string `form:"Department"`
+	PermissionType string `form:"PermissionType" valid:"Required;"`
+	DeviceNote     string `form:"DeviceNote"`
+	BusinessNote   string `form:"BusinessNote"`
+	Name           string `form:"Name" valid:"Required;"`
+	Passphrase     string `form:"passphrase"`
+	ExpireDays     string `form:"EasyRSACertExpire"`
+	Email          string `form:"EasyRSAReqEmail" valid:"Required;Email"`
+	Country        string `form:"EasyRSAReqCountry"`
+	Province       string `form:"EasyRSAReqProvince"`
+	City           string `form:"EasyRSAReqCity"`
+	Org            string `form:"EasyRSAReqOrg"`
+	OrgUnit        string `form:"EasyRSAReqOu"`
+	TFAName        string `form:"TFAName"`
+	TFAIssuer      string `form:"TFAIssuer"`
 }
 
 type CertificatesController struct {
 	BaseController
-	ConfigDir        string
-	LifecycleService *services.CertificateLifecycleService
+	ConfigDir           string
+	LifecycleService    *services.CertificateLifecycleService
+	ProvisioningService *services.UserCertificateProvisioningService
 }
 
 type CertificatePageRecord struct {
@@ -331,58 +337,42 @@ func (c *CertificatesController) Post() {
 				"invalid_input",
 			)
 			c.Data["validation"] = vMap
+		} else if c.ProvisioningService == nil {
+			logs.Error("ERR_USER_PROVISIONING_UNAVAILABLE")
+			c.renderCertificateHTTPError(
+				http.StatusServiceUnavailable,
+				"certificate.provisioning_unavailable",
+			)
+			return
 		} else {
-			logs.Info("Controller: Creating certificate: Name=%s, Staticip=%s, ExpireDays=%s", cParams.Name, cParams.Staticip, cParams.ExpireDays)
-			request := certificateCreationRequest(cParams)
-			if err := c.writeCertificateOperationAudit(
-				services.CertificateAuditActionCreate,
+			logs.Info(
+				"Controller: Provisioning VPN user certificate: Name=%s, PermissionType=%s",
 				cParams.Name,
-				services.CertificateAuditResultStarted,
-				"",
-			); err != nil {
-				logs.Error("ERR_CERT_AUDIT_WRITE")
-				c.renderCertificateHTTPError(
-					http.StatusServiceUnavailable,
-					"error.audit_unavailable",
+				cParams.PermissionType,
+			)
+			result, err := c.ProvisioningService.Provision(
+				c.Ctx.Request.Context(),
+				userCertificateProvisioningInput(cParams),
+				c.lifecycleActor(),
+			)
+			if err != nil {
+				logs.Error("ERR_USER_CERTIFICATE_PROVISION")
+				key := c.provisioningErrorKey(err)
+				c.FlashError(
+					flash,
+					key,
+					"ERR_USER_CERTIFICATE_PROVISION",
+					err,
+					false,
 				)
-				return
-			}
-			if err := lib.CreateCertificate(request); err != nil {
-				c.recordCertificateOperationAudit(
-					services.CertificateAuditActionCreate,
-					cParams.Name,
-					"failed",
-					"creation_failed",
-				)
-				logs.Error("ERR_CERT_CREATE")
-				c.FlashError(flash, "certificate.create_failed", "ERR_CERT_CREATE", err, false)
-				flash.Store(&c.Controller)
 			} else {
-				c.FlashSuccess(flash, "certificate.created", cParams.Name)
-				auditResult := "success"
-				auditError := ""
-				if c.LifecycleService == nil {
-					c.FlashWarning(flash, "certificate.metadata_sync_failed")
-				} else if _, err := c.LifecycleService.SyncCreatedCertificateMetadata(
-					c.Ctx.Request.Context(),
-					cParams.Name,
-					cParams.Staticip,
-					cParams.TFAName,
-					cParams.TFAIssuer,
-				); err != nil {
-					auditResult = "success_with_warning"
-					auditError = "metadata_sync_failed"
-					logs.Error("ERR_CERT_METADATA_SYNC")
-					c.FlashWarning(flash, "certificate.metadata_sync_failed")
-				}
-				c.recordCertificateOperationAudit(
-					services.CertificateAuditActionCreate,
-					cParams.Name,
-					auditResult,
-					auditError,
+				c.FlashSuccess(
+					flash,
+					"certificate.provisioned",
+					result.CertificateName,
 				)
-				flash.Store(&c.Controller)
 			}
+			flash.Store(&c.Controller)
 		}
 	}
 	cfg := models.EasyRSAConfig{Profile: "default"}
@@ -739,7 +729,6 @@ func validateCertParams(cert NewCertParams, localizer *i18n.Localizer) map[strin
 func certificateCreationRequest(cert NewCertParams) lib.CertificateCreationRequest {
 	return lib.CertificateCreationRequest{
 		Name:       cert.Name,
-		StaticIP:   cert.Staticip,
 		Passphrase: cert.Passphrase,
 		ExpireDays: cert.ExpireDays,
 		Email:      cert.Email,
@@ -750,6 +739,53 @@ func certificateCreationRequest(cert NewCertParams) lib.CertificateCreationReque
 		OrgUnit:    cert.OrgUnit,
 		TFAName:    cert.TFAName,
 		TFAIssuer:  cert.TFAIssuer,
+	}
+}
+
+func userCertificateProvisioningInput(
+	cert NewCertParams,
+) services.UserCertificateProvisioningInput {
+	return services.UserCertificateProvisioningInput{
+		DisplayName:     cert.DisplayName,
+		Username:        cert.Username,
+		Email:           cert.Email,
+		Department:      cert.Department,
+		CertificateName: cert.Name,
+		TFAName:         cert.TFAName,
+		TFAIssuer:       cert.TFAIssuer,
+		PermissionType:  cert.PermissionType,
+		ExpireDays:      cert.ExpireDays,
+		DeviceNote:      cert.DeviceNote,
+		BusinessNote:    cert.BusinessNote,
+		Passphrase:      cert.Passphrase,
+		Country:         cert.Country,
+		Province:        cert.Province,
+		City:            cert.City,
+		Org:             cert.Org,
+		OrgUnit:         cert.OrgUnit,
+	}
+}
+
+func (c *CertificatesController) provisioningErrorKey(err error) string {
+	switch {
+	case errors.Is(err, services.ErrUserProvisioningForbidden):
+		return "error.admin_required"
+	case errors.Is(err, services.ErrUserProvisioningInvalidInput):
+		return "certificate.provision_invalid"
+	case errors.Is(err, services.ErrUserProvisioningRecoveryRequired):
+		return "certificate.provision_recovery_required"
+	case errors.Is(err, services.ErrUserProvisioningAuditUnavailable):
+		return "error.audit_unavailable"
+	case errors.Is(err, services.ErrRestrictedIPPoolExhausted):
+		return "certificate.restricted_pool_exhausted"
+	case errors.Is(err, services.ErrRestrictedIPDataSource):
+		return "certificate.restricted_source_unavailable"
+	case errors.Is(err, services.ErrUserProvisioningConflict),
+		errors.Is(err, services.ErrRestrictedIPConflict),
+		errors.Is(err, lib.ErrCertificateAlreadyExists):
+		return "certificate.provision_conflict"
+	default:
+		return "certificate.create_failed"
 	}
 }
 

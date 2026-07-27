@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -28,8 +29,8 @@ func TestUpgradePreservesLegacyTablesAndCreatesFoundationSchema(t *testing.T) {
 	if err != nil {
 		t.Fatalf("run migration: %v", err)
 	}
-	if !reflect.DeepEqual(result.AppliedVersions, []int64{1, 2, 3}) {
-		t.Fatalf("applied versions = %v, want [1 2 3]", result.AppliedVersions)
+	if !reflect.DeepEqual(result.AppliedVersions, []int64{1, 2, 3, 4, 5}) {
+		t.Fatalf("applied versions = %v, want [1 2 3 4 5]", result.AppliedVersions)
 	}
 	if result.BackupPath == "" {
 		t.Fatal("expected a pre-migration backup")
@@ -44,6 +45,8 @@ func TestUpgradePreservesLegacyTablesAndCreatesFoundationSchema(t *testing.T) {
 		"totp_identities",
 		"audit_logs",
 		"ip_allocations",
+		"vpn_users",
+		"ip_allocation_reservations",
 	} {
 		assertTableExists(t, db, tableName, true)
 	}
@@ -75,8 +78,8 @@ func TestMigrationIsIdempotent(t *testing.T) {
 		t.Fatalf("second migration run: %v", err)
 	}
 
-	if !reflect.DeepEqual(firstResult.AppliedVersions, []int64{1, 2, 3}) {
-		t.Fatalf("first applied versions = %v, want [1 2 3]", firstResult.AppliedVersions)
+	if !reflect.DeepEqual(firstResult.AppliedVersions, []int64{1, 2, 3, 4, 5}) {
+		t.Fatalf("first applied versions = %v, want [1 2 3 4 5]", firstResult.AppliedVersions)
 	}
 	if len(secondResult.AppliedVersions) != 0 {
 		t.Fatalf("second applied versions = %v, want none", secondResult.AppliedVersions)
@@ -99,8 +102,87 @@ func TestMigrationIsIdempotent(t *testing.T) {
 	if err := db.QueryRow(`SELECT COUNT(*) FROM schema_migrations`).Scan(&migrationCount); err != nil {
 		t.Fatalf("count migration rows: %v", err)
 	}
-	if migrationCount != 3 {
-		t.Fatalf("migration row count = %d, want 3", migrationCount)
+	if migrationCount != 5 {
+		t.Fatalf("migration row count = %d, want 5", migrationCount)
+	}
+}
+
+func TestConcurrentMigrationRunsApplyOnceAndCreateOneBackup(t *testing.T) {
+	databasePath := filepath.Join(t.TempDir(), "db", "data.db")
+	createLegacyDatabase(t, databasePath)
+
+	const runnerCount = 8
+	results := make(chan Result, runnerCount)
+	failures := make(chan error, runnerCount)
+	var waitGroup sync.WaitGroup
+	for index := 0; index < runnerCount; index++ {
+		waitGroup.Add(1)
+		go func() {
+			defer waitGroup.Done()
+			result, err := run(
+				context.Background(),
+				databasePath,
+				registeredMigrations,
+				fixedClock,
+			)
+			if err != nil {
+				failures <- err
+				return
+			}
+			results <- result
+		}()
+	}
+	waitGroup.Wait()
+	close(results)
+	close(failures)
+	for err := range failures {
+		t.Errorf("concurrent migration run: %v", err)
+	}
+	if t.Failed() {
+		return
+	}
+
+	appliedRuns := 0
+	backupRuns := 0
+	for result := range results {
+		if len(result.AppliedVersions) > 0 {
+			appliedRuns++
+			if !reflect.DeepEqual(
+				result.AppliedVersions,
+				[]int64{1, 2, 3, 4, 5},
+			) {
+				t.Fatalf(
+					"concurrent applied versions = %v",
+					result.AppliedVersions,
+				)
+			}
+		}
+		if result.BackupPath != "" {
+			backupRuns++
+		}
+	}
+	if appliedRuns != 1 || backupRuns != 1 {
+		t.Fatalf(
+			"concurrent applied runs = %d, backup runs = %d; want 1 and 1",
+			appliedRuns,
+			backupRuns,
+		)
+	}
+
+	db := openTestDatabase(t, databasePath)
+	defer db.Close()
+	var migrationCount int
+	if err := db.QueryRow(
+		`SELECT COUNT(*) FROM schema_migrations`,
+	).Scan(&migrationCount); err != nil {
+		t.Fatalf("count concurrent migration rows: %v", err)
+	}
+	if migrationCount != len(registeredMigrations) {
+		t.Fatalf(
+			"concurrent migration count = %d, want %d",
+			migrationCount,
+			len(registeredMigrations),
+		)
 	}
 }
 
@@ -257,7 +339,12 @@ func TestIPAllocationsMigrationSupportsPendingReleaseAndRollback(t *testing.T) {
 		t.Fatalf("close v2 database: %v", err)
 	}
 
-	result, err := run(context.Background(), databasePath, registeredMigrations, fixedClock)
+	result, err := run(
+		context.Background(),
+		databasePath,
+		registeredMigrations[:3],
+		fixedClock,
+	)
 	if err != nil {
 		t.Fatalf("apply ip allocation migration: %v", err)
 	}
@@ -321,13 +408,123 @@ func TestIPAllocationsMigrationSupportsPendingReleaseAndRollback(t *testing.T) {
 	assertTableExists(t, backupDB, "certificates", true)
 }
 
+func TestVPNUsersAndReservationMigrationsEnforceRelationships(t *testing.T) {
+	databasePath := filepath.Join(t.TempDir(), "db", "data.db")
+	if _, err := run(
+		context.Background(),
+		databasePath,
+		registeredMigrations[:3],
+		fixedClock,
+	); err != nil {
+		t.Fatalf("initialize v3 database: %v", err)
+	}
+
+	result, err := run(context.Background(), databasePath, registeredMigrations, fixedClock)
+	if err != nil {
+		t.Fatalf("apply vpn user and reservation migrations: %v", err)
+	}
+	if !reflect.DeepEqual(result.AppliedVersions, []int64{4, 5}) {
+		t.Fatalf("applied versions = %v, want [4 5]", result.AppliedVersions)
+	}
+	if result.BackupPath == "" {
+		t.Fatal("expected a verified pre-v4 backup")
+	}
+
+	db := openTestDatabase(t, databasePath)
+	defer db.Close()
+	assertTableExists(t, db, "vpn_users", true)
+	assertTableExists(t, db, "ip_allocation_reservations", true)
+
+	if _, err := db.Exec(`INSERT INTO vpn_users (
+		id, display_name, username, email, department, notes
+	) VALUES (10, 'Test User', 'test-user', 'test-user@example.invalid', 'QA', '')`); err != nil {
+		t.Fatalf("insert VPN user: %v", err)
+	}
+	if _, err := db.Exec(`INSERT INTO vpn_users (
+		display_name, username, email
+	) VALUES ('Duplicate User', 'TEST-USER', 'other@example.invalid')`); err == nil {
+		t.Fatal("expected case-insensitive duplicate username to fail")
+	}
+	if _, err := db.Exec(`INSERT INTO vpn_users (
+		display_name, username, email
+	) VALUES ('Duplicate Email', 'other-user', 'TEST-USER@EXAMPLE.INVALID')`); err == nil {
+		t.Fatal("expected case-insensitive duplicate email to fail")
+	}
+	if _, err := db.Exec(`INSERT INTO certificates (
+		id, vpn_user_id, common_name, serial_number, status
+	) VALUES (20, 999, 'missing-user-client', 'B1', 'valid')`); err == nil {
+		t.Fatal("expected missing VPN user relationship to fail")
+	}
+	if _, err := db.Exec(`INSERT INTO certificates (
+		id, vpn_user_id, common_name, serial_number, status
+	) VALUES (21, 10, 'test-user-client', 'B2', 'valid')`); err != nil {
+		t.Fatalf("insert linked certificate: %v", err)
+	}
+	if _, err := db.Exec(`DELETE FROM vpn_users WHERE id = 10`); err == nil {
+		t.Fatal("expected linked VPN user deletion to fail")
+	}
+
+	if _, err := db.Exec(`INSERT INTO ip_allocation_reservations (
+		ip_address, certificate_name, request_id, status
+	) VALUES ('10.9.5.10', 'test-user-client', 'request-1', 'reserved')`); err != nil {
+		t.Fatalf("insert active reservation: %v", err)
+	}
+	if _, err := db.Exec(`INSERT INTO ip_allocation_reservations (
+		ip_address, certificate_name, request_id, status
+	) VALUES ('10.9.5.10', 'other-client', 'request-2', 'reserved')`); err == nil {
+		t.Fatal("expected duplicate active IP reservation to fail")
+	}
+	if _, err := db.Exec(`INSERT INTO ip_allocation_reservations (
+		ip_address, certificate_name, request_id, status
+	) VALUES ('10.9.5.11', 'TEST-USER-CLIENT', 'request-3', 'reserved')`); err == nil {
+		t.Fatal("expected duplicate active certificate reservation to fail")
+	}
+	if _, err := db.Exec(`UPDATE ip_allocation_reservations
+		SET status = 'invalid' WHERE certificate_name = 'test-user-client'`); err == nil {
+		t.Fatal("expected invalid reservation status to fail")
+	}
+}
+
+func TestVPNUsersAndReservationDownSQLIsIsolatedAndReversible(t *testing.T) {
+	databasePath := filepath.Join(t.TempDir(), "db", "data.db")
+	if _, err := run(context.Background(), databasePath, registeredMigrations, fixedClock); err != nil {
+		t.Fatalf("initialize database: %v", err)
+	}
+
+	db := openTestDatabase(t, databasePath)
+	defer db.Close()
+	tx, err := db.Begin()
+	if err != nil {
+		t.Fatalf("begin isolated rollback verification: %v", err)
+	}
+	for migrationIndex := len(registeredMigrations) - 1; migrationIndex >= 3; migrationIndex-- {
+		for _, statement := range registeredMigrations[migrationIndex].Down {
+			if _, err := tx.Exec(statement); err != nil {
+				tx.Rollback()
+				t.Fatalf(
+					"execute v%d rollback statement: %v",
+					registeredMigrations[migrationIndex].Version,
+					err,
+				)
+			}
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatalf("commit isolated rollback verification: %v", err)
+	}
+	assertTableExists(t, db, "ip_allocation_reservations", false)
+	assertTableExists(t, db, "vpn_users", false)
+	assertTableExists(t, db, "certificates", true)
+	assertTableExists(t, db, "ip_allocations", true)
+}
+
 func TestFailedMigrationRollsBackEntirePendingBatch(t *testing.T) {
 	databasePath := filepath.Join(t.TempDir(), "db", "data.db")
 	legacySchema := createLegacyDatabase(t, databasePath)
 
 	failingMigrations := append([]Migration{}, registeredMigrations...)
 	failingMigrations = append(failingMigrations, Migration{
-		Version: 4,
+		Version: 6,
 		Name:    "forced_failure",
 		Up: []string{
 			`CREATE TABLE should_rollback (id INTEGER PRIMARY KEY)`,
@@ -340,7 +537,7 @@ func TestFailedMigrationRollsBackEntirePendingBatch(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected migration failure")
 	}
-	if !strings.Contains(err.Error(), "migration 4 (forced_failure), statement 2") {
+	if !strings.Contains(err.Error(), "migration 6 (forced_failure), statement 2") {
 		t.Fatalf("unexpected migration error: %v", err)
 	}
 	if len(result.AppliedVersions) != 0 {
@@ -358,6 +555,8 @@ func TestFailedMigrationRollsBackEntirePendingBatch(t *testing.T) {
 		"totp_identities",
 		"audit_logs",
 		"ip_allocations",
+		"vpn_users",
+		"ip_allocation_reservations",
 		"should_rollback",
 	} {
 		assertTableExists(t, db, tableName, false)
@@ -411,6 +610,8 @@ func TestNewDatabaseDoesNotCreateMeaninglessBackup(t *testing.T) {
 		"totp_identities",
 		"audit_logs",
 		"ip_allocations",
+		"vpn_users",
+		"ip_allocation_reservations",
 	} {
 		assertTableExists(t, db, tableName, true)
 	}

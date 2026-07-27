@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"time"
 
 	sqlite3 "github.com/mattn/go-sqlite3"
@@ -60,6 +61,11 @@ func run(
 	if err != nil {
 		return result, err
 	}
+	migrationLock, err := acquireMigrationFileLock(ctx, absPath)
+	if err != nil {
+		return result, fmt.Errorf("acquire SQLite migration lock: %w", err)
+	}
+	defer migrationLock.release()
 
 	db, err := openSQLite(absPath)
 	if err != nil {
@@ -155,6 +161,51 @@ func run(
 	}
 	result.AppliedVersions = appliedVersions
 	return result, nil
+}
+
+type migrationFileLock struct {
+	file *os.File
+}
+
+func acquireMigrationFileLock(
+	ctx context.Context,
+	databasePath string,
+) (*migrationFileLock, error) {
+	lockPath := databasePath + ".migration.lock"
+	file, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR, 0o600)
+	if err != nil {
+		return nil, err
+	}
+	if err := file.Chmod(0o600); err != nil {
+		file.Close()
+		return nil, err
+	}
+
+	for {
+		err = syscall.Flock(int(file.Fd()), syscall.LOCK_EX|syscall.LOCK_NB)
+		if err == nil {
+			return &migrationFileLock{file: file}, nil
+		}
+		if !errors.Is(err, syscall.EWOULDBLOCK) &&
+			!errors.Is(err, syscall.EAGAIN) {
+			file.Close()
+			return nil, err
+		}
+		select {
+		case <-ctx.Done():
+			file.Close()
+			return nil, ctx.Err()
+		case <-time.After(25 * time.Millisecond):
+		}
+	}
+}
+
+func (l *migrationFileLock) release() {
+	if l == nil || l.file == nil {
+		return
+	}
+	_ = syscall.Flock(int(l.file.Fd()), syscall.LOCK_UN)
+	_ = l.file.Close()
 }
 
 func prepareDatabasePath(dbPath string) (absPath string, existed bool, err error) {

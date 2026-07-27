@@ -286,16 +286,49 @@
         <form role="form" action="{{urlfor "CertificatesController.Post"}}" method="post">
           <input type="hidden" name="_csrf" value="{{.SessionCSRFToken}}">
           <div class="box-body">
+            <div class="form-group has-success {{if field_error_exist .validation "DisplayName" }}has-error{{end}}">
+              <label class="control-label" for="DisplayName">{{t .Localizer "certificate.employee_name"}}</label>
+              <input type="text" class="form-control is-warning" maxlength="128" placeholder="{{t .Localizer "certificate.employee_name"}}" id="DisplayName" name="DisplayName" required>
+              <span class="text-muted">{{t .Localizer "certificate.employee_name_help"}}</span>
+            </div>
+
+            <div class="form-group has-success {{if field_error_exist .validation "Username" }}has-error{{end}}">
+              <label class="control-label" for="Username">{{t .Localizer "certificate.vpn_username"}}</label>
+              <input type="text" class="form-control is-warning" maxlength="128" pattern="^[A-Za-z0-9][A-Za-z0-9._@-]{0,127}$" placeholder="username" id="Username" name="Username" required>
+              <span class="text-muted">{{t .Localizer "certificate.vpn_username_help"}}</span>
+            </div>
+
+            <div class="form-group">
+              <label for="Department">{{t .Localizer "certificate.department_optional"}}</label>
+              <input type="text" class="form-control" maxlength="128" placeholder="{{t .Localizer "certificate.department_optional"}}" id="Department" name="Department">
+            </div>
+
+            <div class="form-group has-success {{if field_error_exist .validation "PermissionType" }}has-error{{end}}">
+              <label class="control-label">{{t .Localizer "certificate.permission_type"}}</label>
+              <div>
+                <label class="radio-inline">
+                  <input type="radio" name="PermissionType" value="normal" checked>
+                  {{t .Localizer "certificate.permission_normal"}}
+                </label>
+                <label class="radio-inline">
+                  <input type="radio" name="PermissionType" value="restricted">
+                  {{t .Localizer "certificate.permission_restricted"}}
+                </label>
+              </div>
+              <span id="permission-normal-help" class="text-muted">{{t .Localizer "certificate.permission_normal_help"}}</span>
+              <span id="permission-restricted-help" class="text-muted" hidden>{{t .Localizer "certificate.permission_restricted_help"}}</span>
+            </div>
+
             <div class="form-group has-success {{if field_error_exist .validation "Name" }}has-error{{end}}">
               <label class="control-label" for="name" title="{{t .Localizer "certificate.name_no_spaces"}}"><i class="fa fa-bell-o"></i>{{t .Localizer "certificate.name"}}</label>
-              <input type="text" class="form-control is-warning" pattern="^[^\s]+$" placeholder="{{t .Localizer "certificate.name"}}" id="Name" name="Name">
+              <input type="text" class="form-control is-warning" maxlength="128" pattern="^[A-Za-z0-9][A-Za-z0-9._@-]{0,127}$" placeholder="{{t .Localizer "certificate.name"}}" id="Name" name="Name" required>
               <span class="text-muted" title="{{t .Localizer "certificate.name_no_spaces"}}">{{t .Localizer "certificate.name_help"}}</span>
             </div>
 
             {{ if eq (printf "%d" $.SettingsC.FuncMode) "1" }}
             <div class="form-group has-success {{if field_error_exist .validation "TFAName" }}has-error{{end}}">
-              <label class="control-label" for="tfaname" title="{{t .Localizer "certificate.2fa_name_no_spaces"}}"><i class="fa fa-bell-o"></i>2FA Name</label>
-              <input type="text" class="form-control is-warning" pattern="^[^\s]+$" placeholder="username@example.invalid" id="TFAName" name="TFAName">
+              <label class="control-label" for="tfaname" title="{{t .Localizer "certificate.2fa_name_no_spaces"}}"><i class="fa fa-bell-o"></i>{{t .Localizer "certificate.2fa_name"}}</label>
+              <input type="text" class="form-control is-warning" maxlength="128" pattern="^[A-Za-z0-9][A-Za-z0-9._@-]{0,127}$" placeholder="username@example.invalid" id="TFAName" name="TFAName">
               <span class="text-muted" title="{{t .Localizer "certificate.2fa_name_no_spaces"}}">{{t .Localizer "certificate.2fa_name_help"}}</span>
             </div>
 
@@ -314,15 +347,20 @@
             </div>
 
             <div class="form-group">
-              <label for="staticip" title="{{t .Localizer "certificate.ipv4_without_subnet"}}">{{t .Localizer "certificate.static_ip_optional"}}</label>
-              <input type="text" class="form-control" placeholder="10.9.5.10" pattern="^(\d{1,3}\.){3}\d{1,3}$" id="staticip" name="staticip">
-              <span class="text-muted">{{t .Localizer "certificate.static_ip_help"}}</span>
+              <label for="EasyRSAReqEmail" title="EASYRSA_REQ_EMAIL">{{t .Localizer "certificate.client_email"}}</label>
+              <input type="email" class="form-control" maxlength="254" placeholder="user@example.invalid" id="EasyRSAReqEmail" name="EasyRSAReqEmail" required>
+              <span class="text-muted">{{t .Localizer "certificate.client_email_help"}}</span>
             </div>
 
             <div class="form-group">
-              <label for="EasyRSAReqEmail" title="EASYRSA_REQ_EMAIL">{{t .Localizer "certificate.client_email"}}</label>
-              <input type="email" class="form-control" placeholder="user@example.invalid" id="EasyRSAReqEmail" name="EasyRSAReqEmail" value="{{ .EasyRSA.EasyRSAReqEmail }}">
-              <span class="text-muted">{{t .Localizer "certificate.client_email_help"}}</span>
+              <label for="DeviceNote">{{t .Localizer "certificate.device_note_optional"}}</label>
+              <input type="text" class="form-control" maxlength="512" placeholder="{{t .Localizer "certificate.device_note_optional"}}" id="DeviceNote" name="DeviceNote">
+              <span class="text-muted">{{t .Localizer "certificate.device_note_help"}}</span>
+            </div>
+
+            <div class="form-group">
+              <label for="BusinessNote">{{t .Localizer "certificate.business_note_optional"}}</label>
+              <textarea class="form-control" maxlength="2048" rows="3" id="BusinessNote" name="BusinessNote"></textarea>
             </div>
 
             <div class="form-group">
@@ -487,6 +525,15 @@ $('.totp-qr-form').on('submit', function (event) {
     button.disabled = false;
   });
 });
+
+function updateProvisioningPermissionHelp() {
+  var permission = $('input[name="PermissionType"]:checked').val();
+  $('#permission-normal-help').prop('hidden', permission !== 'normal');
+  $('#permission-restricted-help').prop('hidden', permission !== 'restricted');
+}
+
+$('input[name="PermissionType"]').on('change', updateProvisioningPermissionHelp);
+updateProvisioningPermissionHelp();
 
 $('.modal').on('hidden.bs.modal', function () {
   $(this).find('.totp-qr-form').each(function () {

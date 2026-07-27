@@ -255,4 +255,92 @@ var registeredMigrations = []Migration{
 			`DROP TABLE IF EXISTS ip_allocations`,
 		},
 	},
+	{
+		Version: 4,
+		Name:    "vpn_users",
+		Up: []string{
+			`CREATE TABLE vpn_users (
+				id INTEGER PRIMARY KEY AUTOINCREMENT,
+				display_name TEXT NOT NULL,
+				username TEXT NOT NULL COLLATE NOCASE,
+				email TEXT COLLATE NOCASE,
+				department TEXT NOT NULL DEFAULT '',
+				status TEXT NOT NULL DEFAULT 'active'
+					CHECK (status IN ('active', 'disabled', 'archived')),
+				notes TEXT NOT NULL DEFAULT '',
+				created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+				updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+				archived_at DATETIME
+			)`,
+			`CREATE UNIQUE INDEX idx_vpn_users_username
+				ON vpn_users(username COLLATE NOCASE)`,
+			`CREATE UNIQUE INDEX idx_vpn_users_email
+				ON vpn_users(email COLLATE NOCASE)
+				WHERE email IS NOT NULL AND trim(email) <> ''`,
+			`CREATE INDEX idx_vpn_users_status ON vpn_users(status)`,
+			`CREATE TRIGGER certificates_vpn_user_insert_guard
+				BEFORE INSERT ON certificates
+				WHEN NEW.vpn_user_id IS NOT NULL
+					AND NOT EXISTS (
+						SELECT 1 FROM vpn_users WHERE id = NEW.vpn_user_id
+					)
+				BEGIN
+					SELECT RAISE(ABORT, 'certificates.vpn_user_id does not exist');
+				END`,
+			`CREATE TRIGGER certificates_vpn_user_update_guard
+				BEFORE UPDATE OF vpn_user_id ON certificates
+				WHEN NEW.vpn_user_id IS NOT NULL
+					AND NOT EXISTS (
+						SELECT 1 FROM vpn_users WHERE id = NEW.vpn_user_id
+					)
+				BEGIN
+					SELECT RAISE(ABORT, 'certificates.vpn_user_id does not exist');
+				END`,
+			`CREATE TRIGGER vpn_users_delete_guard
+				BEFORE DELETE ON vpn_users
+				WHEN EXISTS (
+					SELECT 1 FROM certificates WHERE vpn_user_id = OLD.id
+				)
+				BEGIN
+					SELECT RAISE(ABORT, 'vpn_user is referenced by certificates');
+				END`,
+		},
+		Down: []string{
+			`DROP TRIGGER IF EXISTS vpn_users_delete_guard`,
+			`DROP TRIGGER IF EXISTS certificates_vpn_user_update_guard`,
+			`DROP TRIGGER IF EXISTS certificates_vpn_user_insert_guard`,
+			`DROP TABLE IF EXISTS vpn_users`,
+		},
+	},
+	{
+		Version: 5,
+		Name:    "ip_allocation_reservations",
+		Up: []string{
+			`CREATE TABLE ip_allocation_reservations (
+				id INTEGER PRIMARY KEY AUTOINCREMENT,
+				ip_address TEXT NOT NULL,
+				certificate_name TEXT NOT NULL COLLATE NOCASE,
+				request_id TEXT NOT NULL,
+				status TEXT NOT NULL DEFAULT 'reserved'
+					CHECK (status IN ('reserved', 'completed', 'released')),
+				reserved_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+				completed_at DATETIME,
+				released_at DATETIME,
+				error_summary TEXT NOT NULL DEFAULT ''
+			)`,
+			`CREATE UNIQUE INDEX idx_ip_reservations_active_ip
+				ON ip_allocation_reservations(ip_address)
+				WHERE status = 'reserved'`,
+			`CREATE UNIQUE INDEX idx_ip_reservations_active_certificate
+				ON ip_allocation_reservations(certificate_name COLLATE NOCASE)
+				WHERE status = 'reserved'`,
+			`CREATE INDEX idx_ip_reservations_certificate
+				ON ip_allocation_reservations(certificate_name COLLATE NOCASE)`,
+			`CREATE INDEX idx_ip_reservations_status
+				ON ip_allocation_reservations(status)`,
+		},
+		Down: []string{
+			`DROP TABLE IF EXISTS ip_allocation_reservations`,
+		},
+	},
 }

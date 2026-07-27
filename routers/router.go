@@ -13,7 +13,11 @@ import (
 	"github.com/d3vilh/openvpn-ui/services"
 )
 
-func Init(configDir string, lifecycleService *services.CertificateLifecycleService) {
+func Init(
+	configDir string,
+	lifecycleService *services.CertificateLifecycleService,
+	provisioningService *services.UserCertificateProvisioningService,
+) {
 	web.SetStaticPath("/swagger", "swagger")
 	web.Router("/", &controllers.MainController{})
 	web.Router("/login", &controllers.LoginController{}, "get:Login;post:Login")
@@ -29,8 +33,9 @@ func Init(configDir string, lifecycleService *services.CertificateLifecycleServi
 	web.Router("/dangerzone", &controllers.DangerController{})
 
 	web.Include(&controllers.CertificatesController{
-		ConfigDir:        configDir,
-		LifecycleService: lifecycleService,
+		ConfigDir:           configDir,
+		LifecycleService:    lifecycleService,
+		ProvisioningService: provisioningService,
 	})
 	web.Include(&controllers.DangerController{})
 	web.Include(&controllers.OVConfigController{ConfigDir: configDir})

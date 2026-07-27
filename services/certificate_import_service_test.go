@@ -208,6 +208,14 @@ func TestImportCertificateMetadataPreservesPlatformOwnedFields(t *testing.T) {
 		t.Fatalf("seed certificate metadata: %v", err)
 	}
 
+	if _, err := db.Exec(`INSERT INTO vpn_users (
+		id, display_name, username, email, status
+	) VALUES (
+		42, 'Import Test User', 'import-test-user',
+		'import-test-user@example.invalid', 'active'
+	)`); err != nil {
+		t.Fatalf("seed VPN user relationship: %v", err)
+	}
 	if _, err := db.Exec(`UPDATE certificates SET
 		vpn_user_id = 42,
 		status = 'archived',
