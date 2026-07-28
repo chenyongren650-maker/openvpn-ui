@@ -1,6 +1,6 @@
-# OpenVPN-UI 构建基线测试环境
+# OpenVPN-UI 隔离开发与验收环境
 
-本目录只用于需求文档“任务 2：建立构建基线”。它不会挂载生产 PKI、证书、SQLite 或 Docker Socket。
+本目录用于需求文档“任务 2：建立构建基线”以及阶段 B 的隔离开发与验收。它不会挂载生产 PKI、证书、SQLite 或 Docker Socket。阶段 B 候选认证配置默认不启用，必须通过独立确认节点实施。
 
 ## 1. 约束
 
@@ -107,15 +107,15 @@ docker buildx build \
   --platform linux/amd64 \
   --load \
   --build-arg APP_VERSION=0.9.5.6 \
-  --build-arg VCS_REF=a1111cb11eb2d78d2915f74175a40ef4a4bd4027 \
-  -t zhisuan/openvpn-ui:p0-totp-a1111cb \
+  --build-arg VCS_REF=dd28a7d618a916f60faef8ff175344d4e2adbd15 \
+  -t zhisuan/openvpn-ui:p0-totp-dd28a7d \
   .
 ```
 
 检查镜像：
 
 ```bash
-docker image inspect zhisuan/openvpn-ui:p0-totp-a1111cb --format '{{.Architecture}} {{index .Config.Labels "version"}} {{index .Config.Labels "org.opencontainers.image.revision"}}'
+docker image inspect zhisuan/openvpn-ui:p0-totp-dd28a7d --format '{{.Architecture}} {{index .Config.Labels "version"}} {{index .Config.Labels "org.opencontainers.image.revision"}}'
 ```
 
 构建前必须确认本地 `develop` 与 `origin/develop` 同步。若 HEAD 已经更新，应同时更新 `VCS_REF` 和镜像标签，不得继续复用上述旧修订标签。
@@ -158,15 +158,81 @@ test -f .runtime/pki/index.txt
 ## 10. 阶段 B 启用前门槛
 
 1. 先部署并验收阶段 A UI 和 Migration v6，不重启 OpenVPN。
-2. 单独确认安全的 Server 认证脚本或 Server 镜像方案。
+2. 完成 Go 认证程序、证书 `common_name` 与 TFA Name 绑定，以及测试专用派生 Server 镜像。
 3. 经明确授权后，用不回传敏感内容的受控方法核实 TOTP 身份覆盖率。
-4. 将 `oath.secrets` 和二维码权限收紧到 `0600`，并核实属主和回滚。
+4. `oath.secrets` 使用专用认证只读组和 `0640`；二维码保持 `0600`，并核实目录、属主、原子替换和回滚。
 5. 明确使用普通测试用户，还是另行处理 `10.9.5.0/24` 与当前隔离路由不一致的问题。
 6. 完成备份、配置差异检查和回滚演练后，才可申请重启隔离 OpenVPN。
 
 任何一项未完成，都不得启用全局 `auth-user-pass-verify`。
 
-## 11. 停止与回滚
+## 11. 阶段 B1-B3 实施边界
+
+### B1：本地认证组件开发
+
+- 分支：`feature/p0-totp-auth-prep`。
+- 使用 Go 标准库实现认证程序，不调用 `oathtool`，不继续使用模糊匹配的 Shell 脚本。
+- 认证程序同时校验证书 `common_name`、输入 TFA Name 和 TOTP，禁止跨身份串用。
+- UI 根据数据库生成不含 Secret 的原子身份映射。
+- 构建基于固定 Server 基线的测试专用派生镜像，不修改 `openvpn-server-main/`。
+- 当前 Compose 默认保持认证关闭，候选配置只能通过显式 override 启用。
+- B1 仅使用本地 Docker 和合成数据，不连接测试服务器。
+
+### B1.5：只部署 UI
+
+- 备份测试数据库和 TOTP 相关测试文件。
+- 只重建 `openvpn-ui` 服务。
+- 验证阶段 A Migration v6、TOTP 管理、身份映射和权限模型。
+- 不修改或重启 OpenVPN。
+
+### B2：启用普通测试用户动态验证码
+
+候选 Server 配置必须保持证书校验，并使用内存临时凭据目录：
+
+```text
+verify-client-cert require
+script-security 2
+tmp-dir /dev/shm/openvpn-auth
+auth-user-pass-verify /opt/app/bin/openvpn-totp-auth via-file
+```
+
+客户端模板加入 `auth-user-pass`，保留 `auth-nocache`。
+
+禁止使用 `verify-client-cert none`、`auth-user-pass-optional`、`username-as-common-name` 或 `duplicate-cn`。配置写入和重启前分别等待确认。
+
+### B3：受限用户网络验收
+
+`10.9.5.0/24` 与当前隔离环境 `10.250.71.0/24` 不一致。路由和 `OVPN_GUEST_POLICY` 必须作为独立任务规划，不能在 B1/B2 顺便修改。B3 完成前不得宣称受限用户验收通过。
+
+## 12. 权限模型
+
+OpenVPN 会降权运行，不能将 root 拥有的共享 `oath.secrets` 简单设置为 `0600`，也不能退回 `0644`。
+
+目标状态：
+
+- `oath.secrets`：`root:<专用认证只读组>`，权限 `0640`。
+- 非敏感身份映射：`root:<专用认证只读组>`，权限 `0640`。
+- 二维码和敏感备份：`0600`。
+- 共享目录只允许 root 写入，认证组只读和遍历。
+- `/dev/shm/openvpn-auth` 由 OpenVPN 降权运行身份拥有，权限 `0700`，不持久化临时凭据。
+- UI 原子替换认证文件时保留或设置正确的组和权限。
+
+实施前必须只读核实测试容器的实际 UID/GID 和 bind mount 权限行为，不得硬编码未经验证的 ID。无法建立只读共享权限时停止阶段 B。
+
+## 13. B1 测试要求
+
+- 正确、错误、过期和格式异常验证码。
+- 证书与 TFA Name 精确绑定，跨身份组合必须拒绝。
+- 重复、缺失、相似前缀和大小写差异身份。
+- 符号链接、非普通文件、超大文件和宽松权限拒绝。
+- 身份映射原子写入、并发刷新和失败补偿。
+- 敏感信息日志、进程参数和构建产物扫描。
+- Docker 内 gofmt、test、race、vet、build。
+- UI 和测试专用 Server AMD64 镜像构建。
+
+B1 完成后先汇报，不提交、不推送、不部署。
+
+## 14. 停止与回滚
 
 ```bash
 docker compose --env-file .env down
@@ -174,4 +240,4 @@ docker compose --env-file .env down
 
 该命令停止并移除本测试项目的容器和网络，但保留 `.runtime` 测试数据。需要重新初始化时，先停止容器，再将 `.runtime` 重命名为备份目录，不要直接删除。
 
-只更新 UI 时，应先备份测试数据库和 TOTP 相关测试文件，再仅重建 UI 服务。不要使用 `down -v`，不要删除测试 PKI 历史，也不要修改生产目录。
+只更新 UI 时，应先备份测试数据库和 TOTP 相关测试文件，再仅重建 UI 服务。B2 回滚时恢复原 Server 镜像、Server 配置和客户端模板，经确认后只重启测试 OpenVPN。不要使用 `down -v`，不要删除测试 PKI 历史，也不要修改生产目录。
